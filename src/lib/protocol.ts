@@ -18,7 +18,7 @@ export type SenderMsg =
 
 export type EditorMsg =
   | { t: 'hello'; name: string; ready: boolean }
-  | { t: 'plan'; skip: number[] }
+  | { t: 'plan'; skip: number[]; noRetry?: boolean }
   | { t: 'declined' }
   | { t: 'ack'; id: number; bytes: number }
   | { t: 'done'; id: number; ok: boolean }

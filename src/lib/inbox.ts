@@ -4,6 +4,8 @@
 import type Peer from 'peerjs'
 import type { DataConnection } from 'peerjs'
 import { createXXHash64, type IHasher } from 'hash-wasm'
+import { downloadZip } from 'client-zip'
+import { downloadStream } from './download'
 import { makePeer } from './peer'
 import { PEER_PREFIX, WRITE_BLOCK, type EditorMsg, type ManifestFile, type SenderMsg } from './protocol'
 import { safePath, safeSegment } from './files'
@@ -75,6 +77,13 @@ class IncomingSession {
     partsLen: number
   } | null = null
   private hasher: IHasher | null = null
+  // Zip mode (browsers that can't write into a folder): one streamed .zip per delivery.
+  private zip: {
+    next: ((e: { name: string; size: number; lastModified: Date; input: ReadableStream<Uint8Array> } | null) => void) | null
+    queue: ({ name: string; size: number; lastModified: Date; input: ReadableStream<Uint8Array> } | null)[]
+    writer: WritableStreamDefaultWriter<Uint8Array> | null
+    done: Promise<void>
+  } | null = null
   private meter = new SpeedMeter()
   private skippedBytes = 0
 
@@ -114,7 +123,7 @@ class IncomingSession {
   }
 
   sayHello() {
-    this.send({ t: 'hello', name: this.inbox.editorName, ready: !!this.inbox.dir })
+    this.send({ t: 'hello', name: this.inbox.editorName, ready: this.inbox.ready })
   }
 
   private async pump() {
@@ -154,6 +163,11 @@ class IncomingSession {
       case 'end':
         return this.closeFile(msg.id, msg.hash)
       case 'finished':
+        if (this.zip) {
+          this.pushZip(null)
+          await this.zip.done
+          this.zip = null
+        }
         this.view.status = 'done'
         this.view.current = ''
         this.view.finishedAt = Date.now()
@@ -177,7 +191,7 @@ class IncomingSession {
   }
 
   private async onManifest(msg: Extract<SenderMsg, { t: 'manifest' }>) {
-    if (!this.inbox.dir) {
+    if (!this.inbox.ready) {
       this.sayHello()
       return
     }
@@ -192,7 +206,7 @@ class IncomingSession {
       root,
     }
     this.view.label = msg.label
-    this.view.folder = [this.inbox.dir.name, ...root].join(' / ')
+    this.view.folder = this.inbox.mode === 'zip' ? `${root.join(' - ')}.zip in Downloads` : [this.inbox.dir!.name, ...root].join(' / ')
     this.view.totalFiles = msg.files.length
     this.view.totalBytes = msg.files.reduce((a, f) => a + f.size, 0)
     if (this.inbox.isApproved(this.view.clientId, msg.batchId)) {
@@ -205,8 +219,9 @@ class IncomingSession {
   }
 
   async accept(always: boolean) {
-    if (!this.batch || !this.inbox.dir) return
+    if (!this.batch || !this.inbox.ready) return
     this.inbox.approve(this.view.clientId, this.batch.batchId, always ? this.view.name : null)
+    if (this.inbox.mode === 'zip') return this.acceptZip()
     // Anything already on disk at the same size is skipped. This is what makes
     // resuming after a dropped connection work.
     const skip: number[] = []
@@ -227,6 +242,43 @@ class IncomingSession {
     this.meter.reset()
     this.send({ t: 'plan', skip })
     this.changed()
+  }
+
+  private async acceptZip() {
+    const b = this.batch!
+    type Entry = { name: string; size: number; lastModified: Date; input: ReadableStream<Uint8Array> }
+    const z: NonNullable<IncomingSession['zip']> = { next: null, queue: [], writer: null, done: Promise.resolve() }
+    this.zip = z
+    async function* entries(): AsyncGenerator<Entry> {
+      while (true) {
+        const e = z.queue.length ? z.queue.shift()! : await new Promise<Entry | null>((r) => (z.next = r))
+        z.next = null
+        if (!e) return
+        yield e
+      }
+    }
+    const out = await downloadStream(`${b.root.join(' - ')}.zip`)
+    z.done = downloadZip(entries()).body!.pipeTo(out).catch((err) => {
+      console.error(err)
+      this.view.failed.push('The zip download stopped: ' + ((err as Error)?.message || err))
+      this.changed()
+    })
+    this.view.filesSkipped = 0
+    this.view.filesDone = 0
+    this.view.bytesDone = 0
+    this.skippedBytes = 0
+    this.view.failed = []
+    this.view.status = 'receiving'
+    this.view.startedAt = Date.now()
+    this.meter.reset()
+    this.send({ t: 'plan', skip: [], noRetry: true })
+    this.changed()
+  }
+
+  private pushZip(e: { name: string; size: number; lastModified: Date; input: ReadableStream<Uint8Array> } | null) {
+    const z = this.zip!
+    if (z.next) z.next(e)
+    else z.queue.push(e)
   }
 
   decline() {
@@ -257,6 +309,17 @@ class IncomingSession {
     const f = this.batch?.byId.get(id)
     if (!f) throw new Error('Unknown file ' + id)
     await this.abortCurrent()
+    if (!this.hasher) this.hasher = await createXXHash64()
+    if (this.zip) {
+      const ts = new TransformStream<Uint8Array, Uint8Array>(undefined, { highWaterMark: 8 })
+      this.pushZip({ name: safePath(f.path).join('/'), size: f.size, lastModified: new Date(f.lastModified || Date.now()), input: ts.readable })
+      this.zip.writer = ts.writable.getWriter()
+      this.hasher.init()
+      this.zipCur = { id, received: 0 }
+      this.view.current = f.path
+      this.changed()
+      return
+    }
     const parts = safePath(f.path)
     const name = parts.pop() || 'file'
     const dir = await this.dirFor(parts, true)
@@ -269,7 +332,25 @@ class IncomingSession {
     this.changed()
   }
 
+  private zipCur: { id: number; received: number } | null = null
+
   private async onBytes(buf: ArrayBuffer) {
+    if (this.zipCur && this.zip?.writer) {
+      const u8 = new Uint8Array(buf)
+      this.hasher!.update(u8)
+      this.zipCur.received += u8.byteLength
+      this.view.bytesDone += u8.byteLength
+      const w = this.zip.writer
+      await w.ready
+      w.write(u8).catch(() => {})
+      if (this.zipCur.received % (4 * 1024 * 1024) < u8.byteLength) {
+        this.send({ t: 'ack', id: this.zipCur.id, bytes: this.zipCur.received })
+        this.meter.add(this.view.bytesDone)
+        this.view.speed = this.meter.rate
+        this.changed()
+      }
+      return
+    }
     const c = this.cur
     if (!c) return
     const u8 = new Uint8Array(buf)
@@ -300,6 +381,18 @@ class IncomingSession {
   }
 
   private async closeFile(id: number, hash: string) {
+    if (this.zipCur && this.zipCur.id === id && this.zip?.writer) {
+      await this.zip.writer.close()
+      this.zip.writer = null
+      this.zipCur = null
+      const ok = this.hasher!.digest('hex') === hash
+      const path = this.batch?.byId.get(id)?.path || String(id)
+      if (ok) this.view.filesDone++
+      else this.view.failed.push(path)
+      this.send({ t: 'done', id, ok })
+      this.changed()
+      return
+    }
     const c = this.cur
     if (!c || c.id !== id) return
     await this.flush()
@@ -324,6 +417,16 @@ class IncomingSession {
   }
 
   private async abortCurrent() {
+    if (this.zipCur && this.zip?.writer) {
+      this.view.bytesDone -= this.zipCur.received
+      try {
+        await this.zip.writer.abort()
+      } catch {
+        /* ignore */
+      }
+      this.zip.writer = null
+      this.zipCur = null
+    }
     const c = this.cur
     if (!c) return
     this.cur = null
@@ -337,6 +440,11 @@ class IncomingSession {
 
   private async onClose() {
     await this.abortCurrent()
+    if (this.zip) {
+      this.zip.queue = []
+      this.zip.next?.(null)
+      this.zip = null
+    }
     if (this.view.status === 'receiving' || this.view.status === 'asking' || this.view.status === 'connected') {
       this.view.status = 'dropped'
     }
@@ -352,6 +460,7 @@ class IncomingSession {
 export class Inbox {
   peer: Peer | null = null
   dir: FileSystemDirectoryHandle | null = null
+  mode: 'folder' | 'zip' = 'folder'
   editorName = ''
   status: 'starting' | 'online' | 'reconnecting' | 'taken' | 'error' = 'starting'
   error = ''
@@ -410,6 +519,16 @@ export class Inbox {
   destroy() {
     this.destroyed = true
     this.peer?.destroy()
+  }
+
+  get ready() {
+    return this.mode === 'zip' || !!this.dir
+  }
+
+  setMode(mode: 'folder' | 'zip') {
+    this.mode = mode
+    for (const s of this.sessions.values()) s.sayHello()
+    this.emit()
   }
 
   setDir(dir: FileSystemDirectoryHandle | null) {

@@ -1,1 +1,52 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="#1C1B19"/><circle cx="16" cy="16" r="6" fill="#D9442B"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3B3A37"/>
+      <stop offset="1" stop-color="#141312"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.22"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0.04"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E4E1DA"/>
+    </linearGradient>
+    <linearGradient id="cardBack" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8E8B84"/>
+      <stop offset="1" stop-color="#5E5B55"/>
+    </linearGradient>
+    <radialGradient id="tally" cx="0.38" cy="0.32" r="0.75">
+      <stop offset="0" stop-color="#FF8A70"/>
+      <stop offset="0.45" stop-color="#E5482C"/>
+      <stop offset="1" stop-color="#A82A16"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#E5482C" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#E5482C" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="drop" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="1.4" flood-color="#000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+  <!-- tile -->
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="url(#tile)"/>
+  <rect x="2.75" y="2.75" width="58.5" height="58.5" rx="14.25" fill="none" stroke="url(#edge)" stroke-width="1.5"/>
+  <!-- card being handed back (behind) -->
+  <g transform="rotate(-12 26 34)" filter="url(#drop)">
+    <path d="M17 17h11.5l5.5 5.5V45a3 3 0 0 1-3 3H17a3 3 0 0 1-3-3V20a3 3 0 0 1 3-3z" fill="url(#cardBack)"/>
+  </g>
+  <!-- card in front, SD shape with notched corner -->
+  <g transform="rotate(8 36 34)" filter="url(#drop)">
+    <path d="M28 14h12.5l6.5 6.5V46a3 3 0 0 1-3 3H28a3 3 0 0 1-3-3V17a3 3 0 0 1 3-3z" fill="url(#card)"/>
+    <!-- contacts -->
+    <rect x="29" y="17.5" width="2" height="5" rx="0.8" fill="#C9C5BC"/>
+    <rect x="32.5" y="17.5" width="2" height="5" rx="0.8" fill="#C9C5BC"/>
+    <rect x="36" y="17.5" width="2" height="5" rx="0.8" fill="#C9C5BC"/>
+    <!-- record light -->
+    <circle cx="36" cy="38.5" r="7" fill="url(#glow)"/>
+    <circle cx="36" cy="38.5" r="4" fill="url(#tally)"/>
+    <circle cx="34.9" cy="37.3" r="0.9" fill="#FFFFFF" fill-opacity="0.4"/>
+  </g>
+</svg>

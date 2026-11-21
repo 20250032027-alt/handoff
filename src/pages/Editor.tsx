@@ -2,11 +2,15 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 import { Bell, Check, Copy, FolderSimple, PencilSimple, Warning, X } from '@phosphor-icons/react'
 import { Inbox, type SessionView } from '../lib/inbox'
 import { getLocal, idbGet, idbSet, setLocal, stableId } from '../lib/store'
+import { canStreamDownload, prepareDownloads } from '../lib/download'
 import { bytes, duration, plural, speed } from '../lib/format'
 import { Bar, Button, Field, Pill, Shell, Stat, inputClass, useLeaveWarning, useTitle, useWakeLock } from '../components/ui'
 
 const canReceive = typeof window !== 'undefined' && 'showDirectoryPicker' in window
-const testMode = new URLSearchParams(window.location.search).has('opfs')
+const params = new URLSearchParams(window.location.search)
+const testMode = params.has('opfs')
+// Browsers without folder access (Firefox, Safari) get each delivery as one streamed .zip in Downloads.
+const zipMode = params.has('zipmode') || (!canReceive && !testMode)
 
 function useInbox(): Inbox {
   const inbox = useMemo(() => new Inbox(stableId('inbox-id', 8)), [])
@@ -80,6 +84,12 @@ export default function Editor() {
     inbox.setName(name.trim())
   }, [inbox, name])
 
+  useEffect(() => {
+    if (!zipMode) return
+    inbox.setMode('zip')
+    void prepareDownloads()
+  }, [inbox])
+
   const pickFolder = async () => {
     try {
       const h = await window.showDirectoryPicker({ id: 'handoff', mode: 'readwrite' })
@@ -124,7 +134,7 @@ export default function Editor() {
   const asking = sessions.filter((s) => s.status === 'asking').length
   useTitle(busy ? `${Math.floor(totalPct * 100)}% receiving · Handoff` : asking ? `(${asking}) Handoff` : 'Handoff')
 
-  const ready = !!name.trim() && !editingName && !!folder.handle && !folder.needsPermission
+  const ready = !!name.trim() && !editingName && (zipMode || (!!folder.handle && !folder.needsPermission))
 
   const status = !online ? (
     <Pill tone="warn">No internet</Pill>
@@ -146,7 +156,7 @@ export default function Editor() {
     <Pill>Connecting</Pill>
   )
 
-  if (!canReceive && !testMode) return <Unsupported />
+  if (zipMode && !canStreamDownload()) return <Unsupported />
 
   if (inbox.status === 'taken') {
     return (
@@ -173,16 +183,18 @@ export default function Editor() {
               Get footage from your shooters, straight onto your drive.
             </h1>
             <p className="mt-5 text-ink-2 leading-relaxed max-w-[52ch]">
-              Pick a folder on this computer and you get a link. Shooters open it, drop their card in, and the files land in that
-              folder while they watch it happen. Nothing goes up to a cloud first, so there's no storage to fill up and nothing
-              to delete the next day.
+              {zipMode
+                ? 'You get a link. Shooters open it, drop their card in, and the footage downloads straight to this computer while they watch it happen.'
+                : 'Pick a folder on this computer and you get a link. Shooters open it, drop their card in, and the files land in that folder while they watch it happen.'}{' '}
+              Nothing goes up to a cloud first, so there's no storage to fill up and nothing to delete the next day.
             </p>
             <ul className="mt-8 flex flex-col gap-3 text-sm text-ink-2">
               <li className="flex gap-3">
                 <span className="num text-muted w-5">01</span>One link for everyone. It stays the same, so pin it in the group chat.
               </li>
               <li className="flex gap-3">
-                <span className="num text-muted w-5">02</span>Each shooter gets their own folder, sorted by date.
+                <span className="num text-muted w-5">02</span>
+                {zipMode ? 'Each delivery is named after the shooter and the date.' : 'Each shooter gets their own folder, sorted by date.'}
               </li>
               <li className="flex gap-3">
                 <span className="num text-muted w-5">03</span>Every file is checked against the original when it arrives.
@@ -206,6 +218,19 @@ export default function Editor() {
               />
             </Field>
 
+            {zipMode ? (
+              <div className="flex flex-col gap-2">
+                <span className="text-sm font-medium">Where footage goes</span>
+                <div className="flex items-center gap-2 rounded-md border border-line px-3.5 h-11 text-ink-2">
+                  <FolderSimple size={18} weight="bold" className="shrink-0" />
+                  Downloads, one .zip per delivery
+                </div>
+                <span className="text-sm text-muted">
+                  This browser can't save into a folder you pick. Open Handoff in Chrome or Edge to get files unzipped and
+                  sorted into folders, and to skip anything you already have.
+                </span>
+              </div>
+            ) : (
             <div className="flex flex-col gap-2">
               <span className="text-sm font-medium">Where should footage go?</span>
               {folder.handle && folder.needsPermission ? (
@@ -238,10 +263,11 @@ export default function Editor() {
                 An external drive works well. Your browser will ask if Handoff can save files there. Say yes.
               </span>
             </div>
+            )}
 
             <Button
               size="lg"
-              disabled={!name.trim() || !folder.handle || folder.needsPermission}
+              disabled={!name.trim() || (!zipMode && (!folder.handle || folder.needsPermission))}
               onClick={saveName}
             >
               Get my link
@@ -273,13 +299,20 @@ export default function Editor() {
           picks up again when you come back.
         </p>
         <div className="mt-6 flex flex-wrap items-center gap-x-6 gap-y-3 text-sm">
-          <span className="flex items-center gap-2 text-ink-2">
-            <FolderSimple size={16} weight="bold" />
-            Saving to <span className="font-medium text-ink">{folder.handle!.name}</span>
-            <button className="text-muted underline underline-offset-4 hover:text-ink" onClick={pickFolder}>
-              change
-            </button>
-          </span>
+          {zipMode ? (
+            <span className="flex items-center gap-2 text-ink-2">
+              <FolderSimple size={16} weight="bold" />
+              Saving to <span className="font-medium text-ink">Downloads</span>, one .zip per delivery
+            </span>
+          ) : (
+            <span className="flex items-center gap-2 text-ink-2">
+              <FolderSimple size={16} weight="bold" />
+              Saving to <span className="font-medium text-ink">{folder.handle!.name}</span>
+              <button className="text-muted underline underline-offset-4 hover:text-ink" onClick={pickFolder}>
+                change
+              </button>
+            </span>
+          )}
           <span className="flex items-center gap-2 text-ink-2">
             <PencilSimple size={16} weight="bold" />
             Shown as <span className="font-medium text-ink">{name}</span>
@@ -469,10 +502,9 @@ function Unsupported() {
   return (
     <Shell nav="receive">
       <div className="max-w-xl rise">
-        <h1 className="text-3xl md:text-4xl font-semibold tracking-tight leading-tight">Open this in Chrome or Edge to receive.</h1>
+        <h1 className="text-3xl md:text-4xl font-semibold tracking-tight leading-tight">This browser can't receive footage.</h1>
         <p className="mt-4 text-ink-2 leading-relaxed">
-          Receiving saves footage straight into a folder on your computer, and right now only Chrome and Edge on a desktop let a
-          website do that. Sending works in any browser, including Safari.
+          Try Chrome, Edge or Firefox on a computer. Sending works in any browser.
         </p>
         <p className="mt-4 text-ink-2 leading-relaxed">
           If someone sent you a link to send them footage, open that link instead.

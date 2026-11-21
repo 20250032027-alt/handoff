@@ -6,9 +6,13 @@ export function Shell({ right, nav, children }: { right?: ReactNode; nav?: 'rece
       <header className="w-full border-b border-line bg-paper/80 backdrop-blur sticky top-0 z-10">
         <div className="max-w-5xl mx-auto px-5 md:px-8 h-14 flex items-center justify-between gap-4">
           <a href="/" className="flex items-center gap-2.5 text-ink">
-            <span className="relative flex size-5 items-center justify-center rounded-[5px] bg-ink">
-              <span className="size-2 rounded-full bg-tally" />
-            </span>
+            <img
+              src="/logo.svg"
+              alt=""
+              width={28}
+              height={28}
+              className="size-7 rounded-[7px] shadow-[0_1px_2px_rgba(28,27,25,0.25),0_6px_14px_-6px_rgba(28,27,25,0.45)]"
+            />
             <span className="font-semibold tracking-tight">Handoff</span>
           </a>
           {nav && (

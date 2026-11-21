@@ -71,6 +71,7 @@ export class Outbox {
   private destroyed = false
   private wantSend = false
   private retryTimer: ReturnType<typeof setTimeout> | null = null
+  private noRetry = false
 
   constructor(
     private editorId: string,
@@ -195,6 +196,7 @@ export class Outbox {
         }
         return
       case 'plan':
+        this.noRetry = !!msg.noRetry
         void this.run(new Set(msg.skip), this.gen)
         return
       case 'declined':
@@ -293,7 +295,7 @@ export class Outbox {
       if (gen !== this.gen) return
       if (files[i].state === 'skipped' || files[i].state === 'done') continue
       let ok = false
-      for (let attempt = 0; attempt < 3 && !ok; attempt++) {
+      for (let attempt = 0; attempt < (this.noRetry ? 1 : 3) && !ok; attempt++) {
         if (gen !== this.gen) return
         files[i].state = 'sending'
         this.set({ current: i })
