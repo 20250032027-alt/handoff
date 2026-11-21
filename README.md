@@ -25,6 +25,24 @@ A few details:
 
 Your own setup works the same way: Mac with the card is the "shooter", PC is the "editor".
 
+## Letting the team watch
+
+Turn on **Let the team watch** on the Receive page and you get a second link, separate from the send link. Teammates who open it see everything in your Handoff folder, grouped by shooter and day. They can play any clip in the browser and save a copy, straight from your computer.
+
+- It only works while your computer is on and Handoff is open. The page tells teammates that in plain words when it can't connect.
+- **Make a new link** kills the old one right away.
+- Some camera formats (10-bit, RAW) won't play in a browser. Teammates can still save those.
+- It needs folder mode (Chrome, Edge, Opera). Firefox's zip mode has nothing to serve from.
+
+## Keeping it on all the time
+
+1. Install Handoff as an app: use the "Install as an app" button, or the install icon in Chrome's address bar.
+2. Go to `chrome://apps` (or `edge://apps`), right-click Handoff, and turn on **Start app when you sign in**.
+3. Stop the computer from sleeping while it's plugged in.
+4. When Chrome asks for folder access, choose **Allow on every visit**.
+
+The page holds a Web Lock so Chrome won't freeze or discard it in the background.
+
 ## From Drive
 
 Go to `/drive`, paste a folder shared as "Anyone with the link", and you can:

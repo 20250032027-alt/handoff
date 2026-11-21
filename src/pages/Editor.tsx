@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
-import { Bell, Check, Copy, FolderSimple, PencilSimple, Warning, X } from '@phosphor-icons/react'
+import { AppWindow, Bell, Check, Copy, Eye, FolderSimple, PencilSimple, Warning, X } from '@phosphor-icons/react'
 import { Inbox, type SessionView } from '../lib/inbox'
 import { getLocal, idbGet, idbSet, setLocal, stableId } from '../lib/store'
 import { canStreamDownload, prepareDownloads } from '../lib/download'
@@ -89,6 +89,24 @@ export default function Editor() {
     inbox.setMode('zip')
     void prepareDownloads()
   }, [inbox])
+
+  // Holding a Web Lock tells Chrome not to freeze or discard this tab while it sits in the background.
+  useEffect(() => {
+    let release: () => void = () => {}
+    navigator.locks?.request('handoff-inbox', () => new Promise<void>((r) => (release = r))).catch(() => {})
+    if (!zipMode) navigator.serviceWorker?.register('/sw.js').catch(() => {})
+    return () => release()
+  }, [])
+
+  const [installEvt, setInstallEvt] = useState<(Event & { prompt: () => Promise<void> }) | null>(null)
+  useEffect(() => {
+    const h = (e: Event) => {
+      e.preventDefault()
+      setInstallEvt(e as Event & { prompt: () => Promise<void> })
+    }
+    window.addEventListener('beforeinstallprompt', h)
+    return () => window.removeEventListener('beforeinstallprompt', h)
+  }, [])
 
   const pickFolder = async () => {
     try {
@@ -320,6 +338,18 @@ export default function Editor() {
               edit
             </button>
           </span>
+          {installEvt && (
+            <button
+              className="flex items-center gap-2 text-muted hover:text-ink"
+              onClick={async () => {
+                await installEvt.prompt()
+                setInstallEvt(null)
+              }}
+            >
+              <AppWindow size={16} weight="bold" />
+              Install as an app
+            </button>
+          )}
           {notif !== 'granted' && notif !== 'denied' && (
             <button
               className="flex items-center gap-2 text-muted hover:text-ink"
@@ -331,6 +361,30 @@ export default function Editor() {
           )}
         </div>
       </section>
+
+      <WatchSection inbox={inbox} name={name} />
+
+      <details className="mt-6 max-w-[70ch] text-sm group">
+        <summary className="cursor-pointer text-muted hover:text-ink select-none">How to keep Handoff on all the time</summary>
+        <ol className="mt-3 flex flex-col gap-2 text-ink-2 leading-relaxed list-decimal pl-5">
+          <li>
+            Install it as an app with the <span className="font-medium">Install as an app</span> button above (or the install icon in
+            the address bar). It gets its own window, so it won't get lost or closed with your other tabs.
+          </li>
+          <li>
+            Make it open when you log in. In Chrome or Edge, go to <span className="num">chrome://apps</span> (Edge:{' '}
+            <span className="num">edge://apps</span>), right-click Handoff, and turn on <span className="font-medium">Start app when you sign in</span>.
+          </li>
+          <li>
+            Stop the computer from sleeping while it's plugged in. Windows: Settings, System, Power, set sleep to Never. Mac: System
+            Settings, Battery or Energy, turn on "Prevent automatic sleeping".
+          </li>
+          <li>
+            When Chrome asks to let Handoff edit your folder, pick <span className="font-medium">Allow on every visit</span> so it doesn't ask
+            again after a restart.
+          </li>
+        </ol>
+      </details>
 
       <section className="mt-14">
         <div className="flex items-baseline justify-between border-b border-line pb-3">
@@ -412,6 +466,80 @@ export default function Editor() {
         </section>
       )}
     </Shell>
+  )
+}
+
+function WatchSection({ inbox, name }: { inbox: Inbox; name: string }) {
+  const [copied, setCopied] = useState(false)
+  const link = `${window.location.origin}/w/${inbox.id}?k=${inbox.watchKey}${name.trim() ? `&n=${encodeURIComponent(name.trim())}` : ''}`
+  const viewers = inbox.viewers.size
+  if (inbox.mode === 'zip') {
+    return (
+      <section className="mt-12 rounded-xl border border-line bg-card p-6 max-w-3xl">
+        <p className="font-medium flex items-center gap-2">
+          <Eye size={18} weight="bold" /> Let the team watch
+        </p>
+        <p className="mt-2 text-sm text-muted leading-relaxed">
+          Teammates can watch everything you've received from a link, but only when Handoff saves into a folder. Open Handoff in
+          Chrome, Edge or Opera to turn this on.
+        </p>
+      </section>
+    )
+  }
+  return (
+    <section className="mt-12 rounded-xl border border-line bg-card p-6 max-w-3xl">
+      <div className="flex items-start gap-4">
+        <div className="flex-1">
+          <p className="font-medium flex items-center gap-2">
+            <Eye size={18} weight="bold" /> Let the team watch
+          </p>
+          <p className="mt-1.5 text-sm text-muted leading-relaxed">
+            Teammates get their own link to watch and save everything in your Handoff folder, straight from this computer. It
+            works while this tab is open.
+          </p>
+        </div>
+        <button
+          role="switch"
+          aria-checked={inbox.watchOn}
+          onClick={() => inbox.setWatch(!inbox.watchOn)}
+          className={`relative mt-0.5 h-6 w-11 shrink-0 rounded-full transition-colors ${inbox.watchOn ? 'bg-ink' : 'bg-ink/15'}`}
+        >
+          <span className={`absolute top-0.5 left-0.5 size-5 rounded-full bg-paper shadow transition-transform ${inbox.watchOn ? 'translate-x-5' : ''}`} />
+        </button>
+      </div>
+      {inbox.watchOn && (
+        <div className="mt-5 flex flex-col gap-3">
+          <div className="flex flex-col sm:flex-row gap-3">
+            <code className="num min-w-0 flex-1 truncate rounded-md border border-line bg-paper px-3.5 h-10 flex items-center text-sm">
+              {link.replace(/^https?:\/\//, '')}
+            </code>
+            <Button
+              kind="secondary"
+              onClick={async () => {
+                await navigator.clipboard.writeText(link).catch(() => {})
+                setCopied(true)
+                setTimeout(() => setCopied(false), 1800)
+              }}
+            >
+              {copied ? <Check size={16} weight="bold" /> : <Copy size={16} weight="bold" />}
+              {copied ? 'Copied' : 'Copy watch link'}
+            </Button>
+          </div>
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
+            <span className="text-ink-2">
+              {viewers ? `${plural(viewers, 'person')} watching now`.replace('persons', 'people') : 'Nobody watching right now'}
+            </span>
+            <button
+              className="text-muted underline underline-offset-4 hover:text-ink"
+              onClick={() => confirm('Make a new watch link? The old one stops working right away.') && inbox.newWatchKey()}
+            >
+              Make a new link
+            </button>
+          </div>
+          <p className="text-xs text-muted">This is a different link from your send link. Anyone who has it can watch and save your footage.</p>
+        </div>
+      )}
+    </section>
   )
 }
 

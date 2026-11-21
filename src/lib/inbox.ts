@@ -10,7 +10,8 @@ import { makePeer } from './peer'
 import { PEER_PREFIX, WRITE_BLOCK, type EditorMsg, type ManifestFile, type SenderMsg } from './protocol'
 import { safePath, safeSegment } from './files'
 import { SpeedMeter } from './format'
-import { getJSON, setJSON } from './store'
+import { getJSON, getLocal, randomId, setJSON, setLocal } from './store'
+import { ViewerSession } from './library'
 
 export type SessionStatus =
   | 'connected'
@@ -465,6 +466,9 @@ export class Inbox {
   status: 'starting' | 'online' | 'reconnecting' | 'taken' | 'error' = 'starting'
   error = ''
   sessions = new Map<string, IncomingSession>()
+  viewers = new Set<ViewerSession>()
+  watchOn = getLocal('watch-on') === '1'
+  watchKey = getLocal('watch-key') || ''
   history: HistoryItem[] = getJSON('history', [])
   private trusted: Record<string, string> = getJSON('trusted', {})
   private approvedBatches = new Set<string>()
@@ -482,6 +486,8 @@ export class Inbox {
       this.emit()
     })
     peer.on('connection', (conn) => {
+      const meta = (conn.metadata || {}) as { role?: string; key?: string }
+      if (meta.role === 'viewer') return this.addViewer(conn, meta.key || '')
       const s = new IncomingSession(this, conn)
       conn.on('open', () => {
         // A reconnect from the same shooter replaces their old, dropped row.
@@ -514,6 +520,55 @@ export class Inbox {
       }
       this.emit()
     })
+  }
+
+  private addViewer(conn: DataConnection, key: string) {
+    conn.on('open', () => {
+      const status = !this.watchOn || !this.watchKey
+        ? 'off'
+        : key !== this.watchKey
+          ? 'badkey'
+          : this.mode === 'zip'
+            ? 'zip'
+            : !this.dir
+              ? 'nofolder'
+              : 'ok'
+      conn.send(JSON.stringify({ t: 'v-hello', name: this.editorName, status }))
+      if (status !== 'ok') {
+        setTimeout(() => conn.close(), 1500)
+        return
+      }
+      const v = new ViewerSession(conn, {
+        dir: () => (this.watchOn ? this.dir : null),
+        live: () =>
+          Array.from(this.sessions.values())
+            .filter((s) => s.view.status === 'receiving')
+            .map((s) => ({ name: s.view.name, label: s.view.label, filesDone: s.view.filesDone + s.view.filesSkipped, totalFiles: s.view.totalFiles })),
+      })
+      this.viewers.add(v)
+      this.emit()
+      const gone = () => {
+        this.viewers.delete(v)
+        this.emit()
+      }
+      conn.on('close', gone)
+      conn.on('error', gone)
+    })
+  }
+
+  setWatch(on: boolean) {
+    this.watchOn = on
+    if (on && !this.watchKey) this.newWatchKey()
+    setLocal('watch-on', on ? '1' : '0')
+    if (!on) for (const v of this.viewers) v.close()
+    this.emit()
+  }
+
+  newWatchKey() {
+    this.watchKey = randomId(10)
+    setLocal('watch-key', this.watchKey)
+    for (const v of this.viewers) v.close()
+    this.emit()
   }
 
   destroy() {
