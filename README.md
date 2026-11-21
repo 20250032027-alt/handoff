@@ -51,6 +51,10 @@ Go to `/drive`, paste a folder shared as "Anyone with the link", and you can:
 - tick clips one by one, select all in a folder, or "select everything inside" a subfolder
 - save them **into a folder** (keeps Drive's subfolders, skips files you already have) or **as one .zip** (no size cap, works past 4 GB)
 
+**Preload** (the button above the clips) downloads originals into the browser in the background: the selected clips, all videos in the folder, or everything including subfolders. Preloaded clips get a Ready badge, play instantly from your computer, and save without downloading again. They stay until you click **Clear preloaded**.
+
+In Firefox, "Save to a folder" isn't available, but "One .zip" works and goes to Downloads.
+
 Downloads go through Google's API, so you also skip the "can't scan for viruses" warning on big files. Google's own limit still applies: a file that's been downloaded a lot can get locked for a few hours ("download quota exceeded"). When that happens the app tells you.
 
 ## Deploying (free)

@@ -15,8 +15,8 @@
   --color-tally-soft: #fbeae6;
   --color-ok: #346538;
   --color-ok-soft: #edf3ec;
-  --color-warn: #8a5d00;
-  --color-warn-soft: #fbf3db;
+  --color-warn: #2f5b8c;
+  --color-warn-soft: #e8eff8;
 }
 
 html, body { background: var(--color-paper); color: var(--color-ink); }

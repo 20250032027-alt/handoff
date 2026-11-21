@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowRight, CaretRight, Check, FileText, FilmStrip, FolderSimple, Image as ImageIcon, Play, Warning, X } from '@phosphor-icons/react'
+import { ArrowRight, CaretRight, Check, FileText, FilmStrip, FolderSimple, Image as ImageIcon, Lightning, Play, Warning, X } from '@phosphor-icons/react'
+import { canPreload, driveCache } from '../lib/driveCache'
+import { canStreamDownload, downloadStream } from '../lib/download'
 import {
   DRIVE_KEY,
   DriveError,
@@ -15,7 +17,8 @@ import {
 import { SpeedMeter, bytes, duration, plural, speed } from '../lib/format'
 import { Bar, Button, Pill, Shell, inputClass, useLeaveWarning, useTitle, useWakeLock } from '../components/ui'
 
-const canSave = typeof window !== 'undefined' && 'showDirectoryPicker' in window
+const canFolder = typeof window !== 'undefined' && 'showDirectoryPicker' in window
+const canZip = typeof window !== 'undefined' && (typeof window.showSaveFilePicker === 'function' || canStreamDownload())
 
 interface Crumb {
   id: string
@@ -47,6 +50,9 @@ export default function Drive() {
   const [job, setJob] = useState<Job | null>(null)
   const [busyFolder, setBusyFolder] = useState('')
   const abort = useRef<AbortController | null>(null)
+  const [, bump] = useState(0)
+  useEffect(() => driveCache.subscribe(() => bump((n) => n + 1)), [])
+  const [preloadMenu, setPreloadMenu] = useState(false)
 
   const running = !!job && !job.finished
   useWakeLock(running)
@@ -163,19 +169,25 @@ export default function Drive() {
     const list = [...selection].sort((a, b) => (a.path + '/' + a.name).localeCompare(b.path + '/' + b.name, undefined, { numeric: true }))
     let target = ''
     let dir: FileSystemDirectoryHandle | null = null
-    let file: FileSystemFileHandle | null = null
+    let out: WritableStream<Uint8Array> | null = null
     try {
       if (mode === 'folder') {
         dir = await window.showDirectoryPicker({ id: 'handoff-drive', mode: 'readwrite' })
         target = dir.name
       } else {
         const base = (crumbs[0]?.name || 'drive-footage').replace(/[\\/:*?"<>|]/g, '_')
-        file = await window.showSaveFilePicker({
-          id: 'handoff-zip',
-          suggestedName: `${base}.zip`,
-          types: [{ description: 'Zip archive', accept: { 'application/zip': ['.zip'] } }],
-        })
-        target = file.name
+        if (typeof window.showSaveFilePicker === 'function') {
+          const file = await window.showSaveFilePicker({
+            id: 'handoff-zip',
+            suggestedName: `${base}.zip`,
+            types: [{ description: 'Zip archive', accept: { 'application/zip': ['.zip'] } }],
+          })
+          out = await file.createWritable()
+          target = file.name
+        } else {
+          out = await downloadStream(`${base}.zip`)
+          target = `${base}.zip in Downloads`
+        }
       }
     } catch {
       return // closed the picker
@@ -203,7 +215,7 @@ export default function Drive() {
       setJob((j) => (j ? { ...j, p, speed: meter.rate } : j))
     }
     try {
-      const p = mode === 'folder' ? await saveToFolder(list, dir!, ctl.signal, onProgress) : await saveAsZip(list, file!, ctl.signal, onProgress)
+      const p = mode === 'folder' ? await saveToFolder(list, dir!, ctl.signal, onProgress) : await saveAsZip(list, out!, ctl.signal, onProgress)
       setJob((j) => (j ? { ...j, p, finished: true, speed: 0, error: ctl.signal.aborted ? 'Stopped.' : '' } : j))
     } catch (err) {
       setJob((j) => (j ? { ...j, finished: true, speed: 0, error: (err as Error).message } : j))
@@ -254,9 +266,10 @@ export default function Drive() {
         {!items && !error && (
           <p className="mt-3 text-sm text-muted">The folder has to be shared as "Anyone with the link". You don't need to sign in.</p>
         )}
-        {!canSave && (
-          <p className="mt-3 text-sm text-warn">You can browse and preview here, but saving needs Chrome or Edge on a computer.</p>
+        {!canFolder && canZip && (
+          <p className="mt-3 text-sm text-muted">Saving into a folder needs Chrome, Edge or Opera. Saving as one .zip works in this browser.</p>
         )}
+        {!canFolder && !canZip && <p className="mt-3 text-sm text-muted">You can browse and preview here. Saving needs a computer.</p>}
       </section>
 
       {items && (
@@ -285,8 +298,36 @@ export default function Drive() {
                   {allHerePicked ? 'Unselect all here' : 'Select all here'}
                 </button>
               )}
+              {canPreload() && files.some(downloadable) && (
+                <div className="relative">
+                  <Button kind="secondary" size="sm" onClick={() => setPreloadMenu((o) => !o)}>
+                    <Lightning size={14} weight="bold" /> Preload
+                  </Button>
+                  {preloadMenu && (
+                    <PreloadMenu
+                      selected={selection}
+                      here={files.filter((f) => downloadable(f) && f.isVideo)}
+                      hasSubfolders={folders.length > 0}
+                      everything={async () => {
+                        const here = crumbs[crumbs.length - 1]
+                        const out: DriveItem[] = []
+                        const walk = async (id: string, rk: string, path: string) => {
+                          for (const it of await listFolder({ id, resourceKey: rk }, path)) {
+                            if (it.isFolder) await walk(it.id, it.resourceKey, [path, it.name].filter(Boolean).join('/'))
+                            else if (downloadable(it) && it.isVideo) out.push(it)
+                          }
+                        }
+                        await walk(here.id, here.resourceKey, here.path)
+                        return out
+                      }}
+                      close={() => setPreloadMenu(false)}
+                    />
+                  )}
+                </div>
+              )}
             </div>
           </div>
+          <PreloadStrip />
 
           {loading && <div className="py-10 text-sm text-muted">Loading...</div>}
 
@@ -337,10 +378,10 @@ export default function Drive() {
                   </button>
                 </div>
                 <div className="flex gap-3">
-                  <Button kind="secondary" size="lg" disabled={!canSave} onClick={() => run('zip')}>
+                  <Button kind="secondary" size="lg" disabled={!canZip} onClick={() => run('zip')}>
                     One .zip
                   </Button>
-                  <Button size="lg" disabled={!canSave} onClick={() => run('folder')}>
+                  <Button size="lg" disabled={!canFolder} onClick={() => run('folder')}>
                     <FolderSimple size={18} weight="bold" /> Save to a folder
                   </Button>
                 </div>
@@ -395,6 +436,7 @@ function Tile({ f, i, on, can, toggle, play }: { f: DriveItem; i: number; on: bo
         {f.duration > 0 && (
           <span className="num absolute right-2 bottom-2 rounded bg-ink/80 px-1.5 py-0.5 text-[11px] text-paper">{clock(f.duration)}</span>
         )}
+        <CacheBadge id={f.id} />
       </div>
       <button onClick={can ? toggle : undefined} className="mt-2.5 block w-full text-left">
         <span className="block truncate text-sm font-medium">{f.name}</span>
@@ -402,6 +444,136 @@ function Tile({ f, i, on, can, toggle, play }: { f: DriveItem; i: number; on: bo
           {f.isGoogleDoc ? 'Google file, skip' : [bytes(f.size), f.height ? `${f.height}p` : ''].filter(Boolean).join(' · ')}
         </span>
       </button>
+    </div>
+  )
+}
+
+function CacheBadge({ id }: { id: string }) {
+  const st = driveCache.states.get(id)
+  if (!st) return null
+  if (st.status === 'ready')
+    return (
+      <span className="absolute right-2 top-2 flex items-center gap-1 rounded-full bg-paper/95 px-2 py-0.5 text-[11px] font-medium text-ok">
+        <Lightning size={11} weight="fill" /> Ready
+      </span>
+    )
+  if (st.status === 'error')
+    return (
+      <span className="absolute right-2 top-2 rounded-full bg-paper/95 px-2 py-0.5 text-[11px] font-medium text-tally" title={st.error}>
+        Didn't preload
+      </span>
+    )
+  return (
+    <span className="absolute inset-x-0 bottom-0 h-1 bg-ink/20">
+      <span
+        className="block h-full origin-left bg-paper transition-transform duration-300"
+        style={{ transform: `scaleX(${st.size ? st.got / st.size : 0})` }}
+      />
+    </span>
+  )
+}
+
+function PreloadMenu({
+  selected,
+  here,
+  hasSubfolders,
+  everything,
+  close,
+}: {
+  selected: DriveItem[]
+  here: DriveItem[]
+  hasSubfolders: boolean
+  everything: () => Promise<DriveItem[]>
+  close: () => void
+}) {
+  const [listing, setListing] = useState(false)
+  const sum = (l: DriveItem[]) => l.reduce((a, f) => a + f.size, 0)
+  const option = (title: string, list: DriveItem[]) => (
+    <button
+      disabled={!list.length}
+      onClick={() => {
+        void driveCache.enqueue(list)
+        close()
+      }}
+      className="w-full rounded-md px-3 py-2.5 text-left hover:bg-ink/[0.05] disabled:opacity-40 disabled:hover:bg-transparent"
+    >
+      <span className="block text-sm font-medium text-ink">{title}</span>
+      <span className="num block text-xs text-muted mt-0.5">
+        {plural(list.length, 'file')}, {bytes(sum(list))}
+      </span>
+    </button>
+  )
+  return (
+    <>
+      <div className="fixed inset-0 z-10" onClick={close} />
+      <div className="absolute right-0 top-10 z-20 w-80 rounded-lg border border-line bg-card p-2 shadow-[0_12px_32px_-12px_rgba(28,27,25,0.3)]">
+        {option('Selected clips', selected)}
+        {option('All videos in this folder', here)}
+        {hasSubfolders && (
+          <button
+            disabled={listing}
+            onClick={async () => {
+              setListing(true)
+              try {
+                void driveCache.enqueue(await everything())
+              } finally {
+                setListing(false)
+                close()
+              }
+            }}
+            className="w-full rounded-md px-3 py-2.5 text-left hover:bg-ink/[0.05] disabled:opacity-60"
+          >
+            <span className="block text-sm font-medium text-ink">Everything, including subfolders</span>
+            <span className="block text-xs text-muted mt-0.5">{listing ? 'Finding every video...' : 'Good for leaving it running on a whole event'}</span>
+          </button>
+        )}
+        <p className="px-3 pt-2 pb-1.5 text-xs text-muted leading-relaxed border-t border-line mt-1">
+          Downloads the originals into this browser in the background. Once a clip says Ready, it plays instantly and saves
+          without downloading again. Keep this tab open while it works.
+        </p>
+      </div>
+    </>
+  )
+}
+
+function PreloadStrip() {
+  const c = driveCache
+  if (!c.busy && !c.readyCount && !c.error) return null
+  const pct = c.bytesTotal ? c.bytesDone / c.bytesTotal : 0
+  return (
+    <div className="mt-4 rounded-lg border border-line bg-card px-4 py-3 text-sm">
+      {c.error && <p className="text-tally mb-2">{c.error}</p>}
+      {c.busy ? (
+        <>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            <span className="flex items-center gap-2 font-medium">
+              <Lightning size={14} weight="fill" className="text-tally" /> Preloading
+            </span>
+            <span className="num text-muted">
+              {bytes(c.bytesDone)} / {bytes(c.bytesTotal)}, {plural(c.pendingCount, 'file')} left
+            </span>
+            <button className="ml-auto text-muted hover:text-ink" onClick={() => c.stop()}>
+              Stop
+            </button>
+          </div>
+          <div className="mt-2.5">
+            <Bar value={pct} live />
+          </div>
+        </>
+      ) : (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          <span className="flex items-center gap-2 text-ink-2">
+            <Lightning size={14} weight="fill" className="text-ok" />
+            {plural(c.readyCount, 'clip')} preloaded in this browser, <span className="num">{bytes(c.usedBytes)}</span>
+          </span>
+          <button
+            className="ml-auto text-muted hover:text-ink"
+            onClick={() => confirm('Remove all preloaded clips from this browser? Your saved files are not affected.') && c.clear()}
+          >
+            Clear preloaded
+          </button>
+        </div>
+      )}
     </div>
   )
 }
@@ -415,6 +587,20 @@ function clock(ms: number) {
 }
 
 function Preview({ f, close, on, toggle }: { f: DriveItem; close: () => void; on: boolean; toggle: () => void }) {
+  const [local, setLocal] = useState('')
+  const [localFailed, setLocalFailed] = useState(false)
+  useEffect(() => {
+    let url = ''
+    driveCache.file(f).then((file) => {
+      if (file) {
+        url = URL.createObjectURL(file)
+        setLocal(url)
+      }
+    })
+    return () => {
+      if (url) URL.revokeObjectURL(url)
+    }
+  }, [f])
   useEffect(() => {
     const k = (e: KeyboardEvent) => e.key === 'Escape' && close()
     window.addEventListener('keydown', k)
@@ -435,10 +621,20 @@ function Preview({ f, close, on, toggle }: { f: DriveItem; close: () => void; on
           </button>
         </div>
         <div className="aspect-video bg-ink">
-          <iframe src={previewUrl(f)} className="size-full" allow="autoplay; fullscreen" allowFullScreen title={f.name} />
+          {local && !localFailed && f.isVideo ? (
+            <video src={local} controls autoPlay playsInline className="size-full" onError={() => setLocalFailed(true)} />
+          ) : local && !localFailed && f.isImage ? (
+            <img src={local} alt={f.name} className="size-full object-contain" onError={() => setLocalFailed(true)} />
+          ) : (
+            <iframe src={previewUrl(f)} className="size-full" allow="autoplay; fullscreen" allowFullScreen title={f.name} />
+          )}
         </div>
         <p className="px-5 py-3 text-xs text-muted">
-          Preview plays Google's streaming copy, which can look softer than the original. What you save is the original file.
+          {local && !localFailed
+            ? 'Playing the preloaded original, straight from this computer.'
+            : localFailed
+              ? "This clip's format can't play in a browser, so this is Google's copy. The saved file is still the original."
+              : "Preview plays Google's streaming copy, which can look softer than the original. What you save is the original file."}
         </p>
       </div>
     </div>

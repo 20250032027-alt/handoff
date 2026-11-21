@@ -3,6 +3,7 @@
 
 import { downloadZip } from 'client-zip'
 import { safePath } from './files'
+import { driveCache } from './driveCache'
 
 export const DRIVE_KEY: string = import.meta.env.VITE_GOOGLE_API_KEY || ''
 const API = 'https://www.googleapis.com/drive/v3/files'
@@ -147,7 +148,8 @@ export function previewUrl(item: DriveItem) {
   return `https://drive.google.com/file/d/${item.id}/preview${item.resourceKey ? `?resourcekey=${item.resourceKey}` : ''}`
 }
 
-async function openMedia(item: DriveItem, signal: AbortSignal): Promise<Response> {
+// Straight from Google, skipping the preload cache. The cache uses this to fill itself.
+async function fetchOriginal(item: DriveItem, signal: AbortSignal): Promise<Response> {
   let res = await fetch(mediaUrl(item), { headers: keysHeader([item]), signal })
   // acknowledgeAbuse is only allowed for some files. Retry without it if Google refuses.
   if (res.status === 400 || res.status === 403) {
@@ -158,6 +160,15 @@ async function openMedia(item: DriveItem, signal: AbortSignal): Promise<Response
   }
   if (!res.ok || !res.body) throw await toError(res)
   return res
+}
+
+driveCache.setFetcher(fetchOriginal)
+
+// Preloaded clips come from the browser's storage instead of downloading again.
+async function openMedia(item: DriveItem, signal: AbortSignal): Promise<Response> {
+  const cached = await driveCache.file(item)
+  if (cached) return new Response(cached)
+  return fetchOriginal(item, signal)
 }
 
 // Counts bytes as they stream past so the page can show progress.
@@ -238,7 +249,7 @@ export async function saveToFolder(
 
 export async function saveAsZip(
   items: DriveItem[],
-  file: FileSystemFileHandle,
+  out: WritableStream<Uint8Array>,
   signal: AbortSignal,
   onProgress: (p: SaveProgress) => void,
 ) {
@@ -269,15 +280,9 @@ export async function saveAsZip(
   }
   // Videos are already compressed, so the zip just stores them. That keeps it fast.
   const zip = downloadZip(entries())
-  const w = await file.createWritable()
   try {
-    await zip.body!.pipeTo(w, { signal })
+    await zip.body!.pipeTo(out, { signal })
   } catch (e) {
-    try {
-      await w.abort()
-    } catch {
-      /* ignore */
-    }
     if (!signal.aborted) throw e
   }
   p.current = ''
