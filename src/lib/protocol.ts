@@ -31,4 +31,4 @@ export const MAX_IN_FLIGHT = 64 * 1024 * 1024 // unacknowledged bytes allowed be
 export const CHANNEL_HIGH_WATER = 4 * 1024 * 1024
 export const CHANNEL_LOW_WATER = 1024 * 1024
 
-export const PEER_PREFIX = 'dailies-v1-'
+export const PEER_PREFIX = 'handoff-v1-'

@@ -200,7 +200,7 @@ class IncomingSession {
     } else {
       this.view.status = 'asking'
       this.changed()
-      this.inbox.notify(`${this.view.name} wants to send footage`, 'Open Dailies to accept it.')
+      this.inbox.notify(`${this.view.name} wants to send footage`, 'Open Handoff to accept it.')
     }
   }
 

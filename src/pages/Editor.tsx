@@ -82,7 +82,7 @@ export default function Editor() {
 
   const pickFolder = async () => {
     try {
-      const h = await window.showDirectoryPicker({ id: 'dailies', mode: 'readwrite' })
+      const h = await window.showDirectoryPicker({ id: 'handoff', mode: 'readwrite' })
       await idbSet('dir', h)
       setFolder({ handle: h, needsPermission: false, loaded: true })
     } catch {
@@ -122,7 +122,7 @@ export default function Editor() {
     ? receiving.reduce((a, s) => a + s.bytesDone, 0) / Math.max(1, receiving.reduce((a, s) => a + s.totalBytes, 0))
     : 0
   const asking = sessions.filter((s) => s.status === 'asking').length
-  useTitle(busy ? `${Math.floor(totalPct * 100)}% receiving · Dailies` : asking ? `(${asking}) Dailies` : 'Dailies')
+  useTitle(busy ? `${Math.floor(totalPct * 100)}% receiving · Handoff` : asking ? `(${asking}) Handoff` : 'Handoff')
 
   const ready = !!name.trim() && !editingName && !!folder.handle && !folder.needsPermission
 
@@ -152,7 +152,7 @@ export default function Editor() {
     return (
       <Shell right={status} nav="receive">
         <div className="max-w-xl rise">
-          <h1 className="text-3xl md:text-4xl font-semibold tracking-tight leading-tight">Dailies is already open in another tab.</h1>
+          <h1 className="text-3xl md:text-4xl font-semibold tracking-tight leading-tight">Handoff is already open in another tab.</h1>
           <p className="mt-4 text-ink-2 leading-relaxed">
             Your link can only be live in one place at a time. Close the other tab, then reload this one.
           </p>
@@ -235,7 +235,7 @@ export default function Editor() {
                 </Button>
               )}
               <span className="text-sm text-muted">
-                An external drive works well. Your browser will ask if Dailies can save files there. Say yes.
+                An external drive works well. Your browser will ask if Handoff can save files there. Say yes.
               </span>
             </div>
 

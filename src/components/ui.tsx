@@ -9,7 +9,7 @@ export function Shell({ right, nav, children }: { right?: ReactNode; nav?: 'rece
             <span className="relative flex size-5 items-center justify-center rounded-[5px] bg-ink">
               <span className="size-2 rounded-full bg-tally" />
             </span>
-            <span className="font-semibold tracking-tight">Dailies</span>
+            <span className="font-semibold tracking-tight">Handoff</span>
           </a>
           {nav && (
             <nav className="flex items-center gap-1 text-sm mr-auto ml-4 md:ml-8">

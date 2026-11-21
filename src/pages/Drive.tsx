@@ -51,7 +51,7 @@ export default function Drive() {
   const running = !!job && !job.finished
   useWakeLock(running)
   useLeaveWarning(running)
-  useTitle(running && job ? `${Math.floor((job.p.bytes / Math.max(1, job.total)) * 100)}% saving · Dailies` : 'From Drive · Dailies')
+  useTitle(running && job ? `${Math.floor((job.p.bytes / Math.max(1, job.total)) * 100)}% saving · Handoff` : 'From Drive · Handoff')
 
   const open = async (e?: React.FormEvent) => {
     e?.preventDefault()
@@ -166,12 +166,12 @@ export default function Drive() {
     let file: FileSystemFileHandle | null = null
     try {
       if (mode === 'folder') {
-        dir = await window.showDirectoryPicker({ id: 'dailies-drive', mode: 'readwrite' })
+        dir = await window.showDirectoryPicker({ id: 'handoff-drive', mode: 'readwrite' })
         target = dir.name
       } else {
         const base = (crumbs[0]?.name || 'drive-footage').replace(/[\\/:*?"<>|]/g, '_')
         file = await window.showSaveFilePicker({
-          id: 'dailies-zip',
+          id: 'handoff-zip',
           suggestedName: `${base}.zip`,
           types: [{ description: 'Zip archive', accept: { 'application/zip': ['.zip'] } }],
         })

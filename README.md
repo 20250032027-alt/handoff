@@ -1,4 +1,4 @@
-# Dailies
+# Handoff
 
 Move camera footage from a shooter's laptop straight onto an editor's drive. Nothing gets uploaded to a cloud first, so there's no storage to fill up and nothing to delete the next day.
 
@@ -67,7 +67,7 @@ If the public PeerJS server ever gets flaky, you can run your own ([peerjs-serve
 
 ### Known limits
 
-- Some strict networks (certain offices, hotels, campus Wi-Fi) block direct connections. Dailies doesn't use a relay, because relaying video costs money. A phone hotspot or a different Wi-Fi usually fixes it.
+- Some strict networks (certain offices, hotels, campus Wi-Fi) block direct connections. Handoff doesn't use a relay, because relaying video costs money. A phone hotspot or a different Wi-Fi usually fixes it.
 - Over the internet, speed depends on the sender's upload speed. On the same Wi-Fi it's as fast as your network.
 - If a single file's transfer gets cut off, that file starts over. Everything that already arrived is kept.
 

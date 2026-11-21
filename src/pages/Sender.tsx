@@ -38,7 +38,7 @@ export default function Sender({ editorId, editorName }: { editorId: string; edi
   useWakeLock(sending)
   useLeaveWarning(sending)
   const pct = v.totalBytes ? v.bytesDone / v.totalBytes : 0
-  useTitle(moving ? `${Math.floor(pct * 100)}% to ${editor} · Dailies` : v.status === 'done' ? `Sent · Dailies` : `Send to ${editor} · Dailies`)
+  useTitle(moving ? `${Math.floor(pct * 100)}% to ${editor} · Handoff` : v.status === 'done' ? `Sent · Handoff` : `Send to ${editor} · Handoff`)
 
   const take = (picked: PickedFile[]) => {
     const { keep, junk } = splitJunk(picked)
@@ -95,7 +95,7 @@ export default function Sender({ editorId, editorName }: { editorId: string; edi
 
   const statusNote: Partial<Record<OutView['status'], string>> = {
     connecting: 'Connecting to your editor...',
-    offline: `${editor} doesn't have Dailies open right now. Leave this tab open and it connects the moment they do.`,
+    offline: `${editor} doesn't have Handoff open right now. Leave this tab open and it connects the moment they do.`,
     unreachable: `Can't get a direct line to ${editor}'s computer. Some office and hotel networks block this. It keeps trying, but a different Wi-Fi or a phone hotspot usually fixes it.`,
     'no-folder': `${editor} is online but hasn't picked where to save yet.`,
     reconnecting: 'Lost the connection. Reconnecting now, and it picks up where it left off.',

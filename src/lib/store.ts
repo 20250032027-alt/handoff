@@ -3,7 +3,7 @@
 
 export function getLocal(key: string): string | null {
   try {
-    return localStorage.getItem('dailies:' + key)
+    return localStorage.getItem('handoff:' + key)
   } catch {
     return null
   }
@@ -11,7 +11,7 @@ export function getLocal(key: string): string | null {
 
 export function setLocal(key: string, value: string) {
   try {
-    localStorage.setItem('dailies:' + key, value)
+    localStorage.setItem('handoff:' + key, value)
   } catch {
     /* private mode, ignore */
   }
@@ -48,7 +48,7 @@ export function setJSON(key: string, value: unknown) {
 
 function db(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open('dailies', 1)
+    const req = indexedDB.open('handoff', 1)
     req.onupgradeneeded = () => req.result.createObjectStore('kv')
     req.onsuccess = () => resolve(req.result)
     req.onerror = () => reject(req.error)
