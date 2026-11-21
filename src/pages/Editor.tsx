@@ -1,0 +1,483 @@
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { Bell, Check, Copy, FolderSimple, PencilSimple, Warning, X } from '@phosphor-icons/react'
+import { Inbox, type SessionView } from '../lib/inbox'
+import { getLocal, idbGet, idbSet, setLocal, stableId } from '../lib/store'
+import { bytes, duration, plural, speed } from '../lib/format'
+import { Bar, Button, Field, Pill, Shell, Stat, inputClass, useLeaveWarning, useTitle, useWakeLock } from '../components/ui'
+
+const canReceive = typeof window !== 'undefined' && 'showDirectoryPicker' in window
+const testMode = new URLSearchParams(window.location.search).has('opfs')
+
+function useInbox(): Inbox {
+  const inbox = useMemo(() => new Inbox(stableId('inbox-id', 8)), [])
+  useEffect(() => {
+    inbox.start()
+    ;(window as unknown as { __inbox: Inbox }).__inbox = inbox
+    return () => inbox.destroy()
+  }, [inbox])
+  return inbox
+}
+
+function useSnapshot(inbox: Inbox) {
+  const [, force] = useState(0)
+  useEffect(() => {
+    const off = inbox.subscribe(() => force((n) => n + 1))
+    return () => {
+      off()
+    }
+  }, [inbox])
+  return inbox.snapshot()
+}
+
+type FolderState = { handle: FileSystemDirectoryHandle | null; needsPermission: boolean; loaded: boolean }
+
+export default function Editor() {
+  const inbox = useInbox()
+  const sessions = useSnapshot(inbox)
+  const [name, setName] = useState(getLocal('editor-name') || '')
+  const [editingName, setEditingName] = useState(!getLocal('editor-name'))
+  const [folder, setFolder] = useState<FolderState>({ handle: null, needsPermission: false, loaded: false })
+  const [copied, setCopied] = useState(false)
+  const [notif, setNotif] = useState(typeof Notification !== 'undefined' ? Notification.permission : 'denied')
+  const online = useSyncExternalStore(
+    (cb) => {
+      window.addEventListener('online', cb)
+      window.addEventListener('offline', cb)
+      return () => {
+        window.removeEventListener('online', cb)
+        window.removeEventListener('offline', cb)
+      }
+    },
+    () => navigator.onLine,
+  )
+
+  // Bring back the folder picked last time. Browsers ask again for permission
+  // after a restart, which needs a click, so we show a button for that.
+  useEffect(() => {
+    ;(async () => {
+      if (testMode) {
+        const h = await navigator.storage.getDirectory()
+        setFolder({ handle: h, needsPermission: false, loaded: true })
+        return
+      }
+      if (!canReceive) return setFolder((f) => ({ ...f, loaded: true }))
+      try {
+        const h = await idbGet<FileSystemDirectoryHandle>('dir')
+        if (!h) return setFolder({ handle: null, needsPermission: false, loaded: true })
+        const p = await h.queryPermission({ mode: 'readwrite' })
+        setFolder({ handle: h, needsPermission: p !== 'granted', loaded: true })
+      } catch {
+        setFolder({ handle: null, needsPermission: false, loaded: true })
+      }
+    })()
+  }, [])
+
+  useEffect(() => {
+    inbox.setDir(folder.handle && !folder.needsPermission ? folder.handle : null)
+  }, [inbox, folder])
+
+  useEffect(() => {
+    inbox.setName(name.trim())
+  }, [inbox, name])
+
+  const pickFolder = async () => {
+    try {
+      const h = await window.showDirectoryPicker({ id: 'dailies', mode: 'readwrite' })
+      await idbSet('dir', h)
+      setFolder({ handle: h, needsPermission: false, loaded: true })
+    } catch {
+      /* closed the picker */
+    }
+  }
+
+  const regrant = async () => {
+    if (!folder.handle) return
+    const p = await folder.handle.requestPermission({ mode: 'readwrite' })
+    if (p === 'granted') setFolder({ ...folder, needsPermission: false })
+  }
+
+  const saveName = () => {
+    const n = name.trim()
+    if (!n) return
+    setLocal('editor-name', n)
+    setEditingName(false)
+  }
+
+  const link = `${window.location.origin}/d/${inbox.id}${name.trim() ? `?n=${encodeURIComponent(name.trim())}` : ''}`
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(link)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1800)
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const receiving = sessions.filter((s) => s.status === 'receiving')
+  const busy = receiving.length > 0
+  useWakeLock(busy)
+  useLeaveWarning(busy)
+  const totalPct = busy
+    ? receiving.reduce((a, s) => a + s.bytesDone, 0) / Math.max(1, receiving.reduce((a, s) => a + s.totalBytes, 0))
+    : 0
+  const asking = sessions.filter((s) => s.status === 'asking').length
+  useTitle(busy ? `${Math.floor(totalPct * 100)}% receiving · Dailies` : asking ? `(${asking}) Dailies` : 'Dailies')
+
+  const ready = !!name.trim() && !editingName && !!folder.handle && !folder.needsPermission
+
+  const status = !online ? (
+    <Pill tone="warn">No internet</Pill>
+  ) : inbox.status === 'online' ? (
+    ready ? (
+      <Pill tone={busy ? 'live' : 'ok'} pulse={busy}>
+        {busy
+          ? receiving.length === 1
+            ? `Receiving from ${receiving[0].name}`
+            : `Receiving from ${receiving.length} shooters`
+          : 'Ready to receive'}
+      </Pill>
+    ) : (
+      <Pill>Setting up</Pill>
+    )
+  ) : inbox.status === 'taken' ? (
+    <Pill tone="warn">Open in another tab</Pill>
+  ) : (
+    <Pill>Connecting</Pill>
+  )
+
+  if (!canReceive && !testMode) return <Unsupported />
+
+  if (inbox.status === 'taken') {
+    return (
+      <Shell right={status} nav="receive">
+        <div className="max-w-xl rise">
+          <h1 className="text-3xl md:text-4xl font-semibold tracking-tight leading-tight">Dailies is already open in another tab.</h1>
+          <p className="mt-4 text-ink-2 leading-relaxed">
+            Your link can only be live in one place at a time. Close the other tab, then reload this one.
+          </p>
+          <Button className="mt-8" onClick={() => window.location.reload()}>
+            Reload
+          </Button>
+        </div>
+      </Shell>
+    )
+  }
+
+  if (!ready) {
+    return (
+      <Shell right={status} nav="receive">
+        <div className="grid gap-12 md:grid-cols-[1.1fr_1fr] md:gap-16">
+          <div className="rise">
+            <h1 className="text-3xl md:text-[44px] font-semibold tracking-tight leading-[1.08]">
+              Get footage from your shooters, straight onto your drive.
+            </h1>
+            <p className="mt-5 text-ink-2 leading-relaxed max-w-[52ch]">
+              Pick a folder on this computer and you get a link. Shooters open it, drop their card in, and the files land in that
+              folder while they watch it happen. Nothing goes up to a cloud first, so there's no storage to fill up and nothing
+              to delete the next day.
+            </p>
+            <ul className="mt-8 flex flex-col gap-3 text-sm text-ink-2">
+              <li className="flex gap-3">
+                <span className="num text-muted w-5">01</span>One link for everyone. It stays the same, so pin it in the group chat.
+              </li>
+              <li className="flex gap-3">
+                <span className="num text-muted w-5">02</span>Each shooter gets their own folder, sorted by date.
+              </li>
+              <li className="flex gap-3">
+                <span className="num text-muted w-5">03</span>Every file is checked against the original when it arrives.
+              </li>
+            </ul>
+          </div>
+
+          <div className="rise flex flex-col gap-8 rounded-xl border border-line bg-card p-6 md:p-8" style={{ ['--i' as string]: 1 }}>
+            <Field label="Your name" help="Shooters see this when they open your link.">
+              <input
+                className={inputClass}
+                value={name}
+                autoFocus={editingName}
+                placeholder="Marco"
+                onChange={(e) => {
+                  setName(e.target.value)
+                  setEditingName(true)
+                }}
+                onBlur={saveName}
+                onKeyDown={(e) => e.key === 'Enter' && saveName()}
+              />
+            </Field>
+
+            <div className="flex flex-col gap-2">
+              <span className="text-sm font-medium">Where should footage go?</span>
+              {folder.handle && folder.needsPermission ? (
+                <>
+                  <Button kind="secondary" className="justify-start" onClick={regrant}>
+                    <FolderSimple size={18} weight="bold" />
+                    Allow access to "{folder.handle.name}" again
+                  </Button>
+                  <button className="self-start text-sm text-muted underline underline-offset-4 hover:text-ink" onClick={pickFolder}>
+                    Or pick a different folder
+                  </button>
+                </>
+              ) : folder.handle ? (
+                <div className="flex items-center justify-between gap-3 rounded-md border border-line px-3.5 h-11">
+                  <span className="flex items-center gap-2 min-w-0">
+                    <FolderSimple size={18} weight="bold" className="shrink-0" />
+                    <span className="truncate">{folder.handle.name}</span>
+                  </span>
+                  <button className="text-sm text-muted hover:text-ink" onClick={pickFolder}>
+                    Change
+                  </button>
+                </div>
+              ) : (
+                <Button kind="secondary" className="justify-start" onClick={pickFolder}>
+                  <FolderSimple size={18} weight="bold" />
+                  Choose a folder
+                </Button>
+              )}
+              <span className="text-sm text-muted">
+                An external drive works well. Your browser will ask if Dailies can save files there. Say yes.
+              </span>
+            </div>
+
+            <Button
+              size="lg"
+              disabled={!name.trim() || !folder.handle || folder.needsPermission}
+              onClick={saveName}
+            >
+              Get my link
+            </Button>
+          </div>
+        </div>
+      </Shell>
+    )
+  }
+
+  const active = sessions.filter((s) => s.status !== 'done' && s.status !== 'declined' && s.status !== 'cancelled')
+  const finished = sessions.filter((s) => s.status === 'done' || s.status === 'declined' || s.status === 'cancelled')
+
+  return (
+    <Shell right={status} nav="receive">
+      <section className="rise">
+        <span className="text-xs uppercase tracking-[0.08em] text-muted">Your link</span>
+        <div className="mt-3 flex flex-col md:flex-row md:items-center gap-3">
+          <code className="num min-w-0 flex-1 truncate rounded-md border border-line bg-card px-4 h-12 flex items-center text-[15px]">
+            {link.replace(/^https?:\/\//, '')}
+          </code>
+          <Button size="lg" onClick={copy} className="md:w-36">
+            {copied ? <Check size={18} weight="bold" /> : <Copy size={18} weight="bold" />}
+            {copied ? 'Copied' : 'Copy link'}
+          </Button>
+        </div>
+        <p className="mt-3 text-sm text-muted max-w-[70ch]">
+          Send this to anyone shooting for you. Keep this tab open while they send. If it closes, their transfer pauses and
+          picks up again when you come back.
+        </p>
+        <div className="mt-6 flex flex-wrap items-center gap-x-6 gap-y-3 text-sm">
+          <span className="flex items-center gap-2 text-ink-2">
+            <FolderSimple size={16} weight="bold" />
+            Saving to <span className="font-medium text-ink">{folder.handle!.name}</span>
+            <button className="text-muted underline underline-offset-4 hover:text-ink" onClick={pickFolder}>
+              change
+            </button>
+          </span>
+          <span className="flex items-center gap-2 text-ink-2">
+            <PencilSimple size={16} weight="bold" />
+            Shown as <span className="font-medium text-ink">{name}</span>
+            <button className="text-muted underline underline-offset-4 hover:text-ink" onClick={() => setEditingName(true)}>
+              edit
+            </button>
+          </span>
+          {notif !== 'granted' && notif !== 'denied' && (
+            <button
+              className="flex items-center gap-2 text-muted hover:text-ink"
+              onClick={async () => setNotif(await Notification.requestPermission())}
+            >
+              <Bell size={16} weight="bold" />
+              Tell me when something arrives
+            </button>
+          )}
+        </div>
+      </section>
+
+      <section className="mt-14">
+        <div className="flex items-baseline justify-between border-b border-line pb-3">
+          <h2 className="font-semibold tracking-tight">Incoming</h2>
+          {busy && (
+            <span className="num text-sm text-muted">
+              {speed(receiving.reduce((a, s) => a + s.speed, 0))}
+            </span>
+          )}
+        </div>
+        {active.length === 0 ? (
+          <div className="py-14 text-center">
+            <p className="text-ink-2">Nobody's sending right now.</p>
+            <p className="mt-1 text-sm text-muted">When someone opens your link, they'll show up here.</p>
+          </div>
+        ) : (
+          <ul className="divide-y divide-line">
+            {active.map((s, i) => (
+              <SessionRow key={s.key} s={s} i={i} inbox={inbox} />
+            ))}
+          </ul>
+        )}
+      </section>
+
+      {(finished.length > 0 || inbox.history.length > 0) && (
+        <section className="mt-14">
+          <h2 className="font-semibold tracking-tight border-b border-line pb-3">Received</h2>
+          <ul className="divide-y divide-line">
+            {finished.map((s) => (
+              <li key={s.key} className="py-4 flex flex-col md:flex-row md:items-center gap-2 md:gap-6">
+                <span className="font-medium md:w-44 truncate">{s.name}</span>
+                <span className="flex-1 text-sm text-ink-2 min-w-0 truncate">
+                  {s.status === 'done'
+                    ? `${plural(s.filesDone + s.filesSkipped, 'file')}, ${bytes(s.totalBytes)} in ${s.folder}`
+                    : s.status === 'declined'
+                      ? 'You declined this one.'
+                      : 'They cancelled before it finished.'}
+                </span>
+                {s.status === 'done' &&
+                  (s.failed.length ? (
+                    <Pill tone="warn">{plural(s.failed.length, 'file')} missing</Pill>
+                  ) : (
+                    <Pill tone="ok">All checked</Pill>
+                  ))}
+                <button className="text-muted hover:text-ink self-start md:self-auto" onClick={() => inbox.dismiss(s.key)} aria-label="Clear">
+                  <X size={16} weight="bold" />
+                </button>
+              </li>
+            ))}
+            {inbox.history
+              .filter((h) => !finished.some((s) => s.status === 'done' && s.finishedAt && Math.abs(s.finishedAt - h.at) < 2000))
+              .slice(0, 12)
+              .map((h) => (
+                <li key={h.at} className="py-4 flex flex-col md:flex-row md:items-center gap-1 md:gap-6 text-sm">
+                  <span className="font-medium md:w-44 truncate text-ink-2">{h.name}</span>
+                  <span className="flex-1 text-muted truncate">
+                    {plural(h.files, 'file')}, {bytes(h.bytes)} in {h.folder}
+                  </span>
+                  <span className="num text-muted">{new Date(h.at).toLocaleDateString()}</span>
+                </li>
+              ))}
+          </ul>
+        </section>
+      )}
+
+      {inbox.trustedNames.length > 0 && (
+        <section className="mt-14 text-sm">
+          <h2 className="font-semibold tracking-tight border-b border-line pb-3 text-base">Accepted automatically</h2>
+          <ul className="mt-3 flex flex-wrap gap-2">
+            {inbox.trustedNames.map((t) => (
+              <li key={t.id} className="flex items-center gap-2 rounded-full border border-line bg-card pl-3 pr-2 h-8">
+                {t.name}
+                <button className="text-muted hover:text-tally" onClick={() => inbox.forget(t.id)} aria-label={`Stop auto-accepting ${t.name}`}>
+                  <X size={14} weight="bold" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </Shell>
+  )
+}
+
+function SessionRow({ s, i, inbox }: { s: SessionView; i: number; inbox: Inbox }) {
+  const [always, setAlways] = useState(false)
+  const pct = s.totalBytes ? s.bytesDone / s.totalBytes : 0
+  const left = s.speed > 0 ? (s.totalBytes - s.bytesDone) / s.speed : NaN
+  const fileCount = s.filesDone + s.filesSkipped
+
+  return (
+    <li className="py-6 rise" style={{ ['--i' as string]: i }}>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <span className="font-medium text-lg tracking-tight">{s.name}</span>
+        {s.label && <span className="text-ink-2">{s.label}</span>}
+        <span className="ml-auto">
+          {s.status === 'receiving' ? (
+            <Pill tone="live" pulse>
+              Receiving
+            </Pill>
+          ) : s.status === 'asking' ? (
+            <Pill tone="warn">Waiting for you</Pill>
+          ) : s.status === 'dropped' ? (
+            <Pill tone="warn">Connection dropped</Pill>
+          ) : (
+            <Pill>Picking files</Pill>
+          )}
+        </span>
+      </div>
+
+      {s.status === 'connected' && <p className="mt-2 text-sm text-muted">They've opened your link and are choosing what to send.</p>}
+
+      {s.status === 'dropped' && (
+        <p className="mt-2 text-sm text-muted">
+          Lost the connection to {s.name}. If they keep their tab open it reconnects by itself and skips files you already have.
+        </p>
+      )}
+
+      {s.status === 'asking' && (
+        <div className="mt-4 rounded-lg border border-line bg-card p-5">
+          <p className="text-ink">
+            {s.name} wants to send <span className="tabular-nums">{plural(s.totalFiles, 'file')}</span>,{' '}
+            <span className="tabular-nums">{bytes(s.totalBytes)}</span>.
+          </p>
+          <p className="mt-1 text-sm text-muted truncate">They'll go into {s.folder}</p>
+          <div className="mt-5 flex flex-wrap items-center gap-3">
+            <Button onClick={() => inbox.session(s.key)?.accept(always)}>Accept</Button>
+            <Button kind="secondary" onClick={() => inbox.session(s.key)?.decline()}>
+              Decline
+            </Button>
+            <label className="ml-1 flex items-center gap-2 text-sm text-ink-2 cursor-pointer select-none">
+              <input type="checkbox" className="size-4 accent-[#1c1b19]" checked={always} onChange={(e) => setAlways(e.target.checked)} />
+              Always accept from {s.name}
+            </label>
+          </div>
+        </div>
+      )}
+
+      {s.status === 'receiving' && (
+        <div className="mt-5">
+          <Bar value={pct} live />
+          <div className="mt-5 grid grid-cols-2 md:grid-cols-4 gap-5">
+            <Stat label="Done" value={`${Math.floor(pct * 100)}%`} />
+            <Stat label="Received" value={`${bytes(s.bytesDone)} / ${bytes(s.totalBytes)}`} />
+            <Stat label="Speed" value={speed(s.speed)} />
+            <Stat label="Time left" value={duration(left)} />
+          </div>
+          <p className="mt-5 text-sm text-muted flex items-center gap-2 min-w-0">
+            <span className="num shrink-0">
+              {fileCount}/{s.totalFiles}
+            </span>
+            <span className="num truncate text-ink-2">{s.current}</span>
+          </p>
+          {s.filesSkipped > 0 && (
+            <p className="mt-1 text-sm text-muted">Skipped {plural(s.filesSkipped, 'file')} you already had.</p>
+          )}
+          {s.failed.length > 0 && (
+            <p className="mt-2 text-sm text-warn flex items-center gap-2">
+              <Warning size={16} weight="bold" /> {plural(s.failed.length, 'file')} didn't match and will be retried.
+            </p>
+          )}
+        </div>
+      )}
+    </li>
+  )
+}
+
+function Unsupported() {
+  return (
+    <Shell nav="receive">
+      <div className="max-w-xl rise">
+        <h1 className="text-3xl md:text-4xl font-semibold tracking-tight leading-tight">Open this in Chrome or Edge to receive.</h1>
+        <p className="mt-4 text-ink-2 leading-relaxed">
+          Receiving saves footage straight into a folder on your computer, and right now only Chrome and Edge on a desktop let a
+          website do that. Sending works in any browser, including Safari.
+        </p>
+        <p className="mt-4 text-ink-2 leading-relaxed">
+          If someone sent you a link to send them footage, open that link instead.
+        </p>
+      </div>
+    </Shell>
+  )
+}
