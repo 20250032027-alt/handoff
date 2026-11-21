@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowRight, CaretRight, Check, FileText, FilmStrip, FolderSimple, Image as ImageIcon, Lightning, Play, Warning, X } from '@phosphor-icons/react'
 import { CAPS_GB, QUALITIES, canPickProxyFolder, canPreload, driveCache } from '../lib/driveCache'
 import { canStreamDownload, downloadStream } from '../lib/download'
+import { getLocal, setLocal } from '../lib/store'
 import {
   DRIVE_KEY,
   DriveError,
@@ -44,7 +45,11 @@ export default function Drive() {
   const [items, setItems] = useState<DriveItem[] | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
-  const [videosOnly, setVideosOnly] = useState(false)
+  const [videosOnly, setVideosOnlyState] = useState(() => getLocal('drive-videos-only') === '1')
+  const setVideosOnly = (v: boolean) => {
+    setVideosOnlyState(v)
+    setLocal('drive-videos-only', v ? '1' : '0')
+  }
   const [picked, setPicked] = useState<Map<string, DriveItem>>(new Map())
   const [preview, setPreview] = useState<DriveItem | null>(null)
   const [job, setJob] = useState<Job | null>(null)
@@ -52,6 +57,10 @@ export default function Drive() {
   const abort = useRef<AbortController | null>(null)
   const [, bump] = useState(0)
   useEffect(() => driveCache.subscribe(() => bump((n) => n + 1)), [])
+  // Pick an unfinished preload back up after a refresh.
+  useEffect(() => {
+    if (DRIVE_KEY && canPreload()) driveCache.resume()
+  }, [])
   const [preloadMenu, setPreloadMenu] = useState(false)
 
   const running = !!job && !job.finished
@@ -451,6 +460,21 @@ function Tile({ f, i, on, can, toggle, play }: { f: DriveItem; i: number; on: bo
 function CacheBadge({ id }: { id: string }) {
   const st = driveCache.states.get(id)
   if (!st) return null
+  const have = driveCache.qualityOf(id)
+  if ((st.status === 'queued' || st.status === 'loading') && have) {
+    // Still playable at the old quality while the new copy is being made.
+    const q = QUALITIES.find((x) => x.id === have)
+    return (
+      <>
+        <span className="absolute right-2 top-2 flex items-center gap-1 rounded-full bg-paper/95 px-2 py-0.5 text-[11px] font-medium text-ok">
+          <Lightning size={11} weight="fill" /> Ready, {q?.label}
+        </span>
+        <span className="absolute inset-x-0 bottom-0 h-1 bg-ink/20">
+          <span className="block h-full origin-left bg-paper transition-transform duration-300" style={{ transform: `scaleX(${st.progress})` }} />
+        </span>
+      </>
+    )
+  }
   if (st.status === 'ready') {
     const q = QUALITIES.find((x) => x.id === st.quality)
     return (
@@ -642,6 +666,7 @@ function PreloadStrip() {
             <span className="flex items-center gap-2 font-medium">
               <Lightning size={14} weight="fill" className="text-tally" />
               {q.id === 'original' ? 'Preloading originals' : `Making ${q.label} copies`}
+              {c.resumed && <span className="font-normal text-muted">(picked up where it left off)</span>}
             </span>
             <span className="num text-muted">
               {c.pendingCount
@@ -659,6 +684,20 @@ function PreloadStrip() {
         </>
       ) : (
         c.readyCount > 0 && (
+          <>
+          {c.otherQuality.length > 0 && (
+            <div className="mb-2.5 pb-2.5 border-b border-line flex flex-wrap items-center gap-x-4 gap-y-1">
+              <span className="text-ink-2">
+                {plural(c.otherQuality.length, 'clip')} {c.otherQuality.length === 1 ? 'is' : 'are'} at a different quality than {q.label}.
+              </span>
+              <button className="text-ink underline underline-offset-4" onClick={() => c.remakeAll()}>
+                Remake at {q.label}
+              </button>
+              <span className="text-xs text-muted">
+                Lower-quality copies are made from the ones already here, so going down is quick and needs no internet.
+              </span>
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
             <span className="flex items-center gap-2 text-ink-2">
               <Lightning size={14} weight="fill" className="text-ok" />
@@ -672,6 +711,8 @@ function PreloadStrip() {
               Clear preloaded
             </button>
           </div>
+          <p className="mt-1.5 text-xs text-muted">Preloaded copies stay after you refresh or close the tab.</p>
+          </>
         )
       )}
     </div>

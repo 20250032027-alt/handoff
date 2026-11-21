@@ -26,7 +26,7 @@ export type CacheState = {
   error?: string
 }
 
-type Entry = { stored: number; quality: Quality; name: string; used: number; source: number }
+type Entry = { stored: number; quality: Quality; name: string; used: number; source: number; file?: string; item?: DriveItem }
 type Settings = { quality: Quality; capGB: number; where: 'browser' | 'folder' }
 type Fetcher = (item: DriveItem, signal: AbortSignal, range?: [number, number]) => Promise<Response>
 
@@ -34,6 +34,10 @@ const PARALLEL_ORIGINAL = 2
 // Short clips spend most of their time waiting on the network, so a few at once keeps things moving.
 const PARALLEL_PROXY = 3
 const FILE_PREFIX = 'proxy-'
+const heightOf = (q: Quality) => (q === 'original' ? Infinity : Number(q))
+const fileNameFor = (id: string, q: Quality) => `${FILE_PREFIX}${id}-${q}${q === 'original' ? '' : '.mp4'}`
+// Files made by an earlier version didn't have the quality in the name.
+const fileOf = (id: string, m: Entry) => m.file || FILE_PREFIX + id + (m.quality === 'original' ? '' : '.mp4')
 
 export function canPreload() {
   return typeof navigator !== 'undefined' && !!navigator.storage?.getDirectory && typeof FileSystemFileHandle !== 'undefined' && 'createWritable' in FileSystemFileHandle.prototype
@@ -64,9 +68,78 @@ class DriveCache {
 
   constructor() {
     for (const [id, m] of Object.entries(this.manifest)) this.states.set(id, { status: 'ready', progress: 1, quality: m.quality })
-    if (this.settings.where === 'folder') void this.restoreFolder()
-    void this.dropOldVersion()
+    void (async () => {
+      if (this.settings.where === 'folder') await this.restoreFolder()
+      await this.dropOldVersion()
+      await this.reconcile()
+    })()
   }
+
+  // Makes the list match what's really stored, so nothing gets lost if the list
+  // and the files ever disagree (after a crash, a refresh mid-write, and so on).
+  private async reconcile() {
+    let dir: FileSystemDirectoryHandle
+    try {
+      dir = await this.dir()
+    } catch {
+      return
+    }
+    const onDisk = new Map<string, File>()
+    try {
+      for await (const [name, h] of dir.entries()) {
+        if (h.kind !== 'file' || !name.startsWith(FILE_PREFIX)) continue
+        if (name.endsWith('.crswap')) {
+          await dir.removeEntry(name).catch(() => {})
+          continue
+        }
+        onDisk.set(name, await (h as FileSystemFileHandle).getFile())
+      }
+    } catch {
+      return
+    }
+    let changed = false
+    const known = new Set<string>()
+    for (const [id, m] of Object.entries(this.manifest)) {
+      const f = onDisk.get(fileOf(id, m))
+      if (!f || f.size === 0) {
+        delete this.manifest[id]
+        this.states.delete(id)
+        changed = true
+      } else known.add(fileOf(id, m))
+    }
+    for (const [name, f] of onDisk) {
+      if (known.has(name)) continue
+      const match = /^proxy-(.+)-(360|480|720|1080|original)(\.mp4)?$/.exec(name)
+      if (!match || f.size === 0) {
+        await dir.removeEntry(name).catch(() => {})
+        continue
+      }
+      const [, id, q] = match
+      this.manifest[id] = { stored: f.size, quality: q as Quality, name: id, used: f.lastModified, source: 0, file: name }
+      this.states.set(id, { status: 'ready', progress: 1, quality: q as Quality })
+      changed = true
+    }
+    if (changed) {
+      setJSON('drive-cache-v2', this.manifest)
+      this.emit()
+    }
+  }
+
+  // Picks an unfinished preload back up after a refresh.
+  resume() {
+    const saved = getJSON<{ items: DriveItem[] }>('preload-queue', { items: [] })
+    if (saved.items.length && !this.busy) {
+      this.resumed = true
+      void this.enqueue(saved.items)
+    }
+  }
+  resumed = false
+
+  private saveQueue() {
+    const pending = [...this.queue, ...this.inFlight.values()]
+    setJSON('preload-queue', { items: pending })
+  }
+  private inFlight = new Map<string, DriveItem>()
 
   // The first version kept full originals under a different list. Clean those up.
   private async dropOldVersion() {
@@ -164,7 +237,7 @@ class DriveCache {
     const m = this.manifest[item.id]
     if (!m) return null
     try {
-      const f = await (await (await this.dir()).getFileHandle(FILE_PREFIX + item.id + (m.quality === 'original' ? '' : '.mp4'))).getFile()
+      const f = await (await (await this.dir()).getFileHandle(fileOf(item.id, m))).getFile()
       m.used = Date.now()
       setJSON('drive-cache-v2', this.manifest)
       return f
@@ -272,6 +345,7 @@ class DriveCache {
       this.totalInBatch += i.size
       this.clipsInBatch++
     }
+    this.saveQueue()
     this.emit()
     this.pump()
   }
@@ -283,21 +357,38 @@ class DriveCache {
 
   stop() {
     this.ctl.abort()
-    for (const q of this.queue) this.states.delete(q.id)
+    for (const q of this.queue) {
+      if (this.manifest[q.id]) this.states.set(q.id, { status: 'ready', progress: 1, quality: this.manifest[q.id].quality })
+      else this.states.delete(q.id)
+    }
     this.queue = []
+    this.resumed = false
+    setJSON('preload-queue', { items: [] })
     this.emit()
+  }
+
+  // Clips that are ready, but at a different quality than the one picked now.
+  get otherQuality(): DriveItem[] {
+    return Object.entries(this.manifest)
+      .filter(([, m]) => m.quality !== this.settings.quality && m.item)
+      .map(([, m]) => m.item!)
+  }
+
+  remakeAll() {
+    void this.enqueue(this.otherQuality)
   }
 
   private async next() {
     const item = this.queue.shift()
     if (!item) return
     this.running++
+    this.inFlight.set(item.id, item)
     const quality = this.settings.quality
     const st: CacheState = { status: 'loading', progress: 0 }
     this.states.set(item.id, st)
     this.emit()
     const signal = this.ctl.signal
-    const name = FILE_PREFIX + item.id + (quality === 'original' ? '' : '.mp4')
+    const name = fileNameFor(item.id, quality)
     let w: FileSystemWritableFileStream | null = null
     let dirRef: FileSystemDirectoryHandle | null = null
     let last = 0
@@ -322,14 +413,14 @@ class DriveCache {
       const stored = (await fh.getFile()).size
       // Replace any older copy at a different quality.
       const old = this.manifest[item.id]
-      if (old && old.quality !== quality) {
+      if (old && fileOf(item.id, old) !== name) {
         try {
-          await dir.removeEntry(FILE_PREFIX + item.id + (old.quality === 'original' ? '' : '.mp4'))
+          await dir.removeEntry(fileOf(item.id, old))
         } catch {
           /* ignore */
         }
       }
-      this.manifest[item.id] = { stored, quality, name: item.name, used: Date.now(), source: item.size }
+      this.manifest[item.id] = { stored, quality, name: item.name, used: Date.now(), source: item.size, file: name, item }
       setJSON('drive-cache-v2', this.manifest)
       st.status = 'ready'
       st.progress = 1
@@ -341,17 +432,22 @@ class DriveCache {
       } catch {
         /* ignore */
       }
-      if (!this.manifest[item.id] || this.manifest[item.id].quality !== quality) await dirRef?.removeEntry(name).catch(() => {})
-      if (signal.aborted) this.states.delete(item.id)
+      if (!this.manifest[item.id] || fileOf(item.id, this.manifest[item.id]) !== name) await dirRef?.removeEntry(name).catch(() => {})
+      const prev = this.manifest[item.id]
+      if (prev) this.states.set(item.id, { status: 'ready', progress: 1, quality: prev.quality, error: signal.aborted ? undefined : friendly(e) })
+      else if (signal.aborted) this.states.delete(item.id)
       else {
         st.status = 'error'
         st.error = friendly(e)
       }
     } finally {
       this.live.delete(item.id)
+      this.inFlight.delete(item.id)
       this.doneInBatch += item.size
       this.clipsDoneInBatch++
       this.running--
+      if (!signal.aborted) this.saveQueue()
+      if (!this.busy) this.resumed = false
       this.emit()
       if (!signal.aborted) this.pump()
     }
@@ -377,7 +473,8 @@ class DriveCache {
     const { ALL_FORMATS, BlobSource, Conversion, CustomSource, Input, Mp4OutputFormat, Output, StreamTarget, canEncodeAudio } = await import('mediabunny')
     // Read the clip from Drive in pieces as the converter needs them. If a full-size
     // copy is already preloaded, read that instead.
-    const local = await this.original(item)
+    const prev = this.manifest[item.id]
+    const local = prev && heightOf(prev.quality) > q.height ? await this.file(item) : await this.original(item)
     const source = local
       ? new BlobSource(local)
       : new CustomSource({
@@ -436,7 +533,7 @@ class DriveCache {
       if (used <= cap) break
       if (id === keep && entries.length > 1) continue
       try {
-        await dir.removeEntry(FILE_PREFIX + id + (m.quality === 'original' ? '' : '.mp4'))
+        await dir.removeEntry(fileOf(id, m))
       } catch {
         /* already gone */
       }
@@ -461,13 +558,14 @@ class DriveCache {
       const dir = await this.dir()
       for (const id of Object.keys(this.manifest)) {
         const m = this.manifest[id]
-        await dir.removeEntry(FILE_PREFIX + id + (m.quality === 'original' ? '' : '.mp4')).catch(() => {})
+        await dir.removeEntry(fileOf(id, m)).catch(() => {})
       }
     } catch {
       /* folder not reachable */
     }
     this.manifest = {}
     setJSON('drive-cache-v2', this.manifest)
+    setJSON('preload-queue', { items: [] })
     this.states.clear()
   }
 

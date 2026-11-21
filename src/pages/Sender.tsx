@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowRight, Check, FolderSimple, Files, Warning, X } from '@phosphor-icons/react'
 import { Outbox, type OutView } from '../lib/outbox'
 import { filesFromDrop, filesFromInput, splitJunk, type PickedFile } from '../lib/files'
+import { PHOTO_EXT } from '../lib/protocol'
 import { getLocal, setLocal, stableId } from '../lib/store'
 import { bytes, duration, plural, speed } from '../lib/format'
 import { Bar, Button, Field, Pill, Shell, Stat, inputClass, useLeaveWarning, useTitle, useWakeLock } from '../components/ui'
@@ -42,11 +43,26 @@ export default function Sender({ editorId, editorName }: { editorId: string; edi
   const pct = v.totalBytes ? v.bytesDone / v.totalBytes : 0
   useTitle(moving ? `${Math.floor(pct * 100)}% to ${editor} · Handoff` : v.status === 'done' ? `Sent · Handoff` : `Send to ${editor} · Handoff`)
 
-  const take = (picked: PickedFile[]) => {
-    const { keep, junk } = splitJunk(picked)
-    setJunk(junk)
-    out.setFiles(keep)
+  // Everything picked so far. Picking again adds to it instead of starting over.
+  const [picked, setPicked] = useState<PickedFile[]>([])
+  const update = (next: PickedFile[]) => {
+    setPicked(next)
+    out.setFiles(next)
   }
+  const take = (incoming: PickedFile[]) => {
+    const { keep, junk: j } = splitJunk(incoming)
+    setJunk((n) => n + j)
+    const seen = new Set(picked.map((p) => p.path + ':' + p.file.size))
+    const fresh = keep.filter((p) => !seen.has(p.path + ':' + p.file.size))
+    update([...picked, ...fresh].sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true })))
+  }
+  const removeAt = (i: number) => update(picked.filter((_, k) => k !== i))
+  const clearAll = () => {
+    setJunk(0)
+    update([])
+  }
+  const photoCount = picked.filter((p) => PHOTO_EXT.test(p.path)).length
+  const otherCount = picked.length - photoCount
 
   const onDrop = async (e: React.DragEvent) => {
     e.preventDefault()
@@ -148,7 +164,15 @@ export default function Sender({ editorId, editorName }: { editorId: string; edi
               <p className="mt-3 text-sm text-muted">Send the card again. Everything that already arrived gets skipped.</p>
             </div>
           )}
-          <Button className="mt-8" size="lg" onClick={() => out.reset()}>
+          <Button
+            className="mt-8"
+            size="lg"
+            onClick={() => {
+              setPicked([])
+              setJunk(0)
+              out.reset()
+            }}
+          >
             Send another card
           </Button>
         </div>
@@ -162,7 +186,14 @@ export default function Sender({ editorId, editorName }: { editorId: string; edi
         <div className="max-w-xl rise">
           <h1 className="text-3xl md:text-4xl font-semibold tracking-tight leading-tight">{editor} declined this one.</h1>
           <p className="mt-4 text-ink-2 leading-relaxed">Nothing was sent. If that seems wrong, message them and try again.</p>
-          <Button className="mt-8" onClick={() => out.reset()}>
+          <Button
+            className="mt-8"
+            onClick={() => {
+              setPicked([])
+              setJunk(0)
+              out.reset()
+            }}
+          >
             Start over
           </Button>
         </div>
@@ -178,7 +209,12 @@ export default function Sender({ editorId, editorName }: { editorId: string; edi
           <span className="text-xs uppercase tracking-[0.08em] text-muted">Sending to {editor}</span>
           <div className="mt-3 flex items-end justify-between gap-6">
             <span className="num text-6xl md:text-7xl tracking-tighter leading-none">{Math.floor(pct * 100)}%</span>
-            <Button kind="ghost" size="sm" onClick={() => confirm('Stop sending? Files that already arrived stay with your editor.') && out.cancel()}>
+            <Button kind="ghost" size="sm" onClick={() => {
+                if (!confirm('Stop sending? Files that already arrived stay with your editor.')) return
+                setPicked([])
+                setJunk(0)
+                out.cancel()
+              }}>
               <X size={16} weight="bold" /> Stop
             </Button>
           </div>
@@ -234,14 +270,20 @@ export default function Sender({ editorId, editorName }: { editorId: string; edi
             // @ts-expect-error non-standard but supported everywhere that matters
             webkitdirectory=""
             multiple
-            onChange={(e) => e.target.files && take(filesFromInput(e.target.files))}
+            onChange={(e) => {
+              if (e.target.files) take(filesFromInput(e.target.files))
+              e.target.value = ''
+            }}
           />
           <input
             ref={filesInput}
             type="file"
             className="hidden"
             multiple
-            onChange={(e) => e.target.files && take(filesFromInput(e.target.files))}
+            onChange={(e) => {
+              if (e.target.files) take(filesFromInput(e.target.files))
+              e.target.value = ''
+            }}
           />
 
           {!hasFiles ? (
@@ -293,7 +335,15 @@ export default function Sender({ editorId, editorName }: { editorId: string; edi
               )}
             </div>
           ) : (
-            <div className="flex flex-col rounded-xl border border-line bg-card p-6">
+            <div
+              className={`flex flex-col rounded-xl border bg-card p-6 transition-colors ${dragging ? 'border-ink' : 'border-line'}`}
+              onDragOver={(e) => {
+                e.preventDefault()
+                setDragging(true)
+              }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={onDrop}
+            >
               <div className="flex items-start justify-between gap-4">
                 <div>
                   <p className="text-lg font-medium tracking-tight">
@@ -303,11 +353,27 @@ export default function Sender({ editorId, editorName }: { editorId: string; edi
                     <p className="mt-1 text-sm text-muted">Left out {plural(junk, 'hidden system file')} your editor won't need.</p>
                   )}
                 </div>
-                <button className="text-sm text-muted hover:text-ink whitespace-nowrap" onClick={() => out.setFiles([])}>
-                  Pick again
+                <button className="text-sm text-muted hover:text-ink whitespace-nowrap" onClick={clearAll}>
+                  Clear all
                 </button>
               </div>
-              <FileList files={v.files} current={-1} compact />
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <Button kind="secondary" size="sm" onClick={() => filesInput.current?.click()}>
+                  <Files size={14} weight="bold" /> Add files
+                </Button>
+                {!isPhone && (
+                  <Button kind="secondary" size="sm" onClick={() => folderInput.current?.click()}>
+                    <FolderSimple size={14} weight="bold" /> Add folder
+                  </Button>
+                )}
+                {photoCount > 0 && otherCount > 0 && (
+                  <Button kind="ghost" size="sm" onClick={() => update(picked.filter((p) => !PHOTO_EXT.test(p.path)))}>
+                    Remove {plural(photoCount, 'photo')}
+                  </Button>
+                )}
+              </div>
+              <p className="mt-2 text-xs text-muted">Adding more keeps what's already here. Tap the x on a file to take it out.</p>
+              <FileList files={v.files} current={-1} compact onRemove={removeAt} />
               <Button size="lg" className="mt-6" disabled={!canSend} onClick={start}>
                 Send to {editor} <ArrowRight size={18} weight="bold" />
               </Button>
@@ -324,7 +390,17 @@ export default function Sender({ editorId, editorName }: { editorId: string; edi
   )
 }
 
-function FileList({ files, current, compact }: { files: OutView['files']; current: number; compact?: boolean }) {
+function FileList({
+  files,
+  current,
+  compact,
+  onRemove,
+}: {
+  files: OutView['files']
+  current: number
+  compact?: boolean
+  onRemove?: (i: number) => void
+}) {
   const ref = useRef<HTMLUListElement>(null)
   useEffect(() => {
     if (current < 0) return
@@ -350,6 +426,15 @@ function FileList({ files, current, compact }: { files: OutView['files']; curren
           <span className={`num flex-1 truncate ${f.state === 'waiting' ? 'text-ink-2' : 'text-ink'}`}>{f.path}</span>
           {f.state === 'skipped' && <span className="text-xs text-muted">already there</span>}
           <span className="num text-muted shrink-0">{bytes(f.size)}</span>
+          {onRemove && (
+            <button
+              onClick={() => onRemove(i)}
+              className="shrink-0 -mr-1 flex size-7 items-center justify-center rounded-md text-muted hover:bg-ink/[0.06] hover:text-tally"
+              aria-label={`Remove ${f.path}`}
+            >
+              <X size={14} weight="bold" />
+            </button>
+          )}
         </li>
       ))}
       {files.length > shown.length && (
