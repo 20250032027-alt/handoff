@@ -263,7 +263,7 @@ export default function Sender({ editorId, editorName }: { editorId: string; edi
                 <>
                   <p className="mt-5 text-lg font-medium tracking-tight">Pick your clips</p>
                   <p className="mt-2 text-sm text-muted max-w-[34ch]">
-                    Plug in a card reader and choose the clips from the Files app. Picking from Photos can shrink videos.
+                    Tap Choose files, then Browse, and open your SD card. Pick from there instead of Photos, since Photos can shrink videos.
                   </p>
                   <div className="mt-7">
                     <Button onClick={() => filesInput.current?.click()}>
@@ -285,6 +285,10 @@ export default function Sender({ editorId, editorName }: { editorId: string; edi
                       <Files size={16} weight="bold" /> Choose files
                     </Button>
                   </div>
+                  <p className="mt-5 text-xs text-muted max-w-[38ch]">
+                    With Choose folder, the files inside look grayed out. That's normal: click the folder itself, then Upload.
+                    Nothing actually goes online, the button is just named that.
+                  </p>
                 </>
               )}
             </div>
