@@ -6,6 +6,8 @@ import { getLocal, setLocal, stableId } from '../lib/store'
 import { bytes, duration, plural, speed } from '../lib/format'
 import { Bar, Button, Field, Pill, Shell, Stat, inputClass, useLeaveWarning, useTitle, useWakeLock } from '../components/ui'
 
+const isPhone = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches && !/Macintosh|Windows/.test(navigator.userAgent)
+
 export default function Sender({ editorId, editorName }: { editorId: string; editorName: string }) {
   const [name, setName] = useState(getLocal('sender-name') || '')
   const nameRef = useRef(name)
@@ -209,7 +211,7 @@ export default function Sender({ editorId, editorName }: { editorId: string; edi
         <div className="rise">
           <h1 className="text-3xl md:text-[44px] font-semibold tracking-tight leading-[1.08]">Send footage to {editor}.</h1>
           <p className="mt-5 text-ink-2 leading-relaxed max-w-[46ch]">
-            Drop your card in and it goes straight to their drive. No upload limit, no waiting for a cloud, and every file gets
+            {isPhone ? 'Your clips go straight to their drive.' : 'Drop your card in and it goes straight to their drive.'} No upload limit, no waiting for a cloud, and every file gets
             checked when it lands.
           </p>
           {statusNote[v.status] && <p className="mt-5 text-sm text-muted leading-relaxed max-w-[46ch]">{statusNote[v.status]}</p>}
@@ -257,18 +259,34 @@ export default function Sender({ editorId, editorName }: { editorId: string; edi
               <span className="flex size-12 items-center justify-center rounded-full bg-paper border border-line">
                 <FolderSimple size={22} weight="bold" />
               </span>
-              <p className="mt-5 text-lg font-medium tracking-tight">{reading ? 'Reading the card...' : 'Drop your card here'}</p>
-              <p className="mt-2 text-sm text-muted max-w-[34ch]">
-                Drag the SD card, or any folder, from Finder or Explorer onto this box.
-              </p>
-              <div className="mt-7 flex flex-wrap justify-center gap-3">
-                <Button kind="secondary" onClick={() => folderInput.current?.click()}>
-                  <FolderSimple size={16} weight="bold" /> Choose folder
-                </Button>
-                <Button kind="ghost" onClick={() => filesInput.current?.click()}>
-                  <Files size={16} weight="bold" /> Choose files
-                </Button>
-              </div>
+              {isPhone ? (
+                <>
+                  <p className="mt-5 text-lg font-medium tracking-tight">Pick your clips</p>
+                  <p className="mt-2 text-sm text-muted max-w-[34ch]">
+                    Plug in a card reader and choose the clips from the Files app. Picking from Photos can shrink videos.
+                  </p>
+                  <div className="mt-7">
+                    <Button onClick={() => filesInput.current?.click()}>
+                      <Files size={16} weight="bold" /> Choose files
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="mt-5 text-lg font-medium tracking-tight">{reading ? 'Reading the card...' : 'Drop your card here'}</p>
+                  <p className="mt-2 text-sm text-muted max-w-[34ch]">
+                    Drag the SD card, or any folder, from Finder or Explorer onto this box.
+                  </p>
+                  <div className="mt-7 flex flex-wrap justify-center gap-3">
+                    <Button kind="secondary" onClick={() => folderInput.current?.click()}>
+                      <FolderSimple size={16} weight="bold" /> Choose folder
+                    </Button>
+                    <Button kind="ghost" onClick={() => filesInput.current?.click()}>
+                      <Files size={16} weight="bold" /> Choose files
+                    </Button>
+                  </div>
+                </>
+              )}
             </div>
           ) : (
             <div className="flex flex-col rounded-xl border border-line bg-card p-6">
