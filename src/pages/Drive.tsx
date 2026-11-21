@@ -472,6 +472,19 @@ function CacheBadge({ id }: { id: string }) {
   )
 }
 
+// Rough size of the preview copies, from clip lengths Drive reports.
+function estimate(list: DriveItem[], quality: string): number | null {
+  const q = QUALITIES.find((x) => x.id === quality)!
+  if (q.id === 'original') return list.reduce((a, f) => a + f.size, 0)
+  let secs = 0
+  let unknown = 0
+  for (const f of list) f.duration ? (secs += f.duration / 1000) : unknown++
+  if (unknown > list.length / 2) return null
+  const perSec = (q.bitrate + 128_000) / 8
+  // Never more than the original itself.
+  return list.reduce((a, f) => a + (f.duration ? Math.min(f.size, (f.duration / 1000) * perSec) : 0), 0) + (unknown ? (secs / Math.max(1, list.length - unknown)) * unknown * perSec : 0)
+}
+
 function PreloadMenu({
   selected,
   here,
@@ -499,7 +512,12 @@ function PreloadMenu({
       className="w-full rounded-md px-3 py-2.5 text-left hover:bg-ink/[0.05] disabled:opacity-40 disabled:hover:bg-transparent"
     >
       <span className="block text-sm font-medium text-ink">{title}</span>
-      <span className="num block text-xs text-muted mt-0.5">{plural(list.length, 'clip')}, {bytes(sum(list))} on Drive</span>
+      <span className="num block text-xs text-muted mt-0.5">
+        {plural(list.length, 'clip')}, {bytes(sum(list))} on Drive
+        {list.length > 0 && c.settings.quality !== 'original' && estimate(list, c.settings.quality) !== null
+          ? `, about ${bytes(estimate(list, c.settings.quality)!)} as ${q.label}`
+          : ''}
+      </span>
     </button>
   )
   return (
@@ -523,7 +541,7 @@ function PreloadMenu({
             {q.hint}.{' '}
             {q.id === 'original'
               ? 'Saving from Drive also gets faster, since nothing has to download again.'
-              : `Roughly ${bytes((q.bitrate / 8) * 3600 + 58e6)} per hour of footage.`}
+              : `Takes about ${bytes((q.bitrate / 8) * 3600 + 58e6)} of space for every hour of video.`}
           </p>
 
           <div className="mt-4 flex items-center justify-between gap-3">
@@ -587,6 +605,7 @@ function PreloadMenu({
           )}
         </div>
         <p className="px-4 pb-4 text-xs text-muted leading-relaxed">
+          Clips you open jump to the front of the line.{' '}
           {q.id === 'original'
             ? 'Downloads each original in the background and keeps it.'
             : `Each clip is read from Drive and shrunk to ${q.label} on this computer, and only the small copy is kept.`}{' '}
@@ -625,7 +644,9 @@ function PreloadStrip() {
               {q.id === 'original' ? 'Preloading originals' : `Making ${q.label} copies`}
             </span>
             <span className="num text-muted">
-              {c.pendingCount ? `${Math.floor(c.batchProgress * 100)}%, ${plural(c.pendingCount, 'clip')} left` : 'Getting ready...'}
+              {c.pendingCount
+                ? `${c.clipsDoneInBatch} of ${plural(c.clipsInBatch, 'clip')} ready${isFinite(c.secondsLeft) ? `, about ${duration(c.secondsLeft)} left` : ''}`
+                : 'Getting ready...'}
             </span>
             {space}
             <button className="ml-auto text-muted hover:text-ink" onClick={() => c.stop()}>
@@ -669,6 +690,7 @@ function Preview({ f, close, on, toggle }: { f: DriveItem; close: () => void; on
   const [local, setLocal] = useState('')
   const [localFailed, setLocalFailed] = useState(false)
   useEffect(() => {
+    driveCache.prioritize(f)
     let url = ''
     driveCache.file(f).then((file) => {
       if (file) {

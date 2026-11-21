@@ -31,6 +31,8 @@ type Settings = { quality: Quality; capGB: number; where: 'browser' | 'folder' }
 type Fetcher = (item: DriveItem, signal: AbortSignal, range?: [number, number]) => Promise<Response>
 
 const PARALLEL_ORIGINAL = 2
+// Short clips spend most of their time waiting on the network, so a few at once keeps things moving.
+const PARALLEL_PROXY = 3
 const FILE_PREFIX = 'proxy-'
 
 export function canPreload() {
@@ -53,6 +55,9 @@ class DriveCache {
   private manifest: Record<string, Entry> = getJSON('drive-cache-v2', {})
   private fetcher: Fetcher | null = null
   error = ''
+  clipsDoneInBatch = 0
+  clipsInBatch = 0
+  batchStarted = 0
   doneInBatch = 0 // source bytes finished in the current batch
   totalInBatch = 0
   private live = new Map<string, number>() // source bytes in progress, per clip
@@ -200,6 +205,25 @@ class DriveCache {
     return this.totalInBatch ? Math.min(1, (this.doneInBatch + live) / this.totalInBatch) : 0
   }
 
+  // Seconds left in the current batch, based on how fast it's gone so far.
+  get secondsLeft() {
+    const p = this.batchProgress
+    const elapsed = (performance.now() - this.batchStarted) / 1000
+    if (p < 0.02 || elapsed < 5) return NaN
+    return (elapsed / p) * (1 - p)
+  }
+
+  // Move a clip to the front of the line, e.g. when you open it.
+  prioritize(item: DriveItem) {
+    if (this.isReady(item.id) || this.states.get(item.id)?.status === 'loading') return
+    const i = this.queue.findIndex((q) => q.id === item.id)
+    if (i > 0) {
+      this.queue.splice(i, 1)
+      this.queue.unshift(item)
+      this.emit()
+    }
+  }
+
   // Work queue
 
   async enqueue(items: DriveItem[]) {
@@ -237,20 +261,23 @@ class DriveCache {
     if (this.running === 0 && this.queue.length === 0) {
       this.doneInBatch = 0
       this.totalInBatch = 0
+      this.clipsDoneInBatch = 0
+      this.clipsInBatch = 0
+      this.batchStarted = performance.now()
       this.ctl = new AbortController()
     }
     for (const i of todo) {
       this.states.set(i.id, { status: 'queued', progress: 0 })
       this.queue.push(i)
       this.totalInBatch += i.size
+      this.clipsInBatch++
     }
     this.emit()
     this.pump()
   }
 
   private pump() {
-    // Making proxies is heavy on the video chip, so one at a time. Plain downloads can overlap.
-    const limit = this.settings.quality === 'original' ? PARALLEL_ORIGINAL : 1
+    const limit = this.settings.quality === 'original' ? PARALLEL_ORIGINAL : PARALLEL_PROXY
     while (this.running < limit && this.queue.length) void this.next()
   }
 
@@ -323,6 +350,7 @@ class DriveCache {
     } finally {
       this.live.delete(item.id)
       this.doneInBatch += item.size
+      this.clipsDoneInBatch++
       this.running--
       this.emit()
       if (!signal.aborted) this.pump()
