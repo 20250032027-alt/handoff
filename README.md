@@ -6,7 +6,7 @@ It also pulls footage out of shared Google Drive folders. You pick the clips you
 
 ## How it works
 
-**You're the editor.** Open the site in Chrome or Edge on your computer. Pick a folder (an external drive is a good idea) and you get a link. That link never changes, so pin it wherever your shooters will find it.
+**You're the editor.** Open the site on your computer. In Chrome or Edge you pick a folder (an external drive is a good idea). In Firefox, each delivery downloads to your Downloads folder as one .zip instead. Either way you get a link. That link never changes, so pin it wherever your shooters will find it.
 
 **They're shooting.** They open your link in any browser, drag in the SD card, and hit send. You get a request with their name and how much they're sending. Accept it, and the files land in:
 
@@ -60,7 +60,7 @@ No billing account is needed. The key only reads files that are already public.
 
 - Vite, React, TypeScript, Tailwind
 - WebRTC data channels through [PeerJS](https://peerjs.com). The free public PeerJS server only handles the handshake. Footage goes directly between the two browsers, encrypted (DTLS).
-- The editor's browser writes into the chosen folder with the File System Access API. That's why receiving needs Chrome or Edge. Sending works anywhere.
+- In Chrome and Edge, the editor's browser writes into the chosen folder with the File System Access API. Firefox doesn't have that, so there a service worker (`public/sw.js`) streams each delivery into Downloads as a zip. Skipping files you already have only works in folder mode. Sending works in any browser.
 - xxHash64 (via `hash-wasm`) for checking files, `client-zip` for streaming zips.
 
 If the public PeerJS server ever gets flaky, you can run your own ([peerjs-server](https://github.com/peers/peerjs-server)) and set `VITE_PEER_HOST`, `VITE_PEER_PORT`, `VITE_PEER_PATH` and `VITE_PEER_SECURE`.
