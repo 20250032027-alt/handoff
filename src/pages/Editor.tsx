@@ -226,7 +226,7 @@ export default function Editor() {
                 className={inputClass}
                 value={name}
                 autoFocus={editingName}
-                placeholder="Marco"
+               
                 onChange={(e) => {
                   setName(e.target.value)
                   setEditingName(true)

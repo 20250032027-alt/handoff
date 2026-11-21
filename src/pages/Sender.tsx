@@ -218,10 +218,10 @@ export default function Sender({ editorId, editorName }: { editorId: string; edi
 
           <div className="mt-10 flex flex-col gap-6 max-w-sm">
             <Field label="Your name" help={`So ${editor} knows who it's from.`}>
-              <input className={inputClass} value={name} placeholder="Lena" onChange={(e) => setName(e.target.value)} />
+              <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} />
             </Field>
             <Field label="What's on it?" help="Optional. Becomes the folder name, next to today's date.">
-              <input className={inputClass} value={label} placeholder="Wedding, day 1" onChange={(e) => setLabel(e.target.value)} />
+              <input className={inputClass} value={label} onChange={(e) => setLabel(e.target.value)} />
             </Field>
           </div>
         </div>

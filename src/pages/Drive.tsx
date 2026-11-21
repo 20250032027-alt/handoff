@@ -249,7 +249,7 @@ export default function Drive() {
             className={inputClass + ' sm:flex-1 h-12'}
             value={link}
             onChange={(e) => setLink(e.target.value)}
-            placeholder="https://drive.google.com/drive/folders/..."
+           
             spellCheck={false}
           />
           <Button size="lg" type="submit" disabled={loading || !link.trim()}>
