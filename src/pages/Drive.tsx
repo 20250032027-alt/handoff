@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowRight, CaretRight, Check, FileText, FilmStrip, FolderSimple, Image as ImageIcon, Lightning, Play, Warning, X } from '@phosphor-icons/react'
-import { canPreload, driveCache } from '../lib/driveCache'
+import { CAPS_GB, QUALITIES, canPickProxyFolder, canPreload, driveCache } from '../lib/driveCache'
 import { canStreamDownload, downloadStream } from '../lib/download'
 import {
   DRIVE_KEY,
@@ -451,24 +451,23 @@ function Tile({ f, i, on, can, toggle, play }: { f: DriveItem; i: number; on: bo
 function CacheBadge({ id }: { id: string }) {
   const st = driveCache.states.get(id)
   if (!st) return null
-  if (st.status === 'ready')
+  if (st.status === 'ready') {
+    const q = QUALITIES.find((x) => x.id === st.quality)
     return (
       <span className="absolute right-2 top-2 flex items-center gap-1 rounded-full bg-paper/95 px-2 py-0.5 text-[11px] font-medium text-ok">
-        <Lightning size={11} weight="fill" /> Ready
+        <Lightning size={11} weight="fill" /> Ready{q ? `, ${q.label}` : ''}
       </span>
     )
+  }
   if (st.status === 'error')
     return (
-      <span className="absolute right-2 top-2 rounded-full bg-paper/95 px-2 py-0.5 text-[11px] font-medium text-tally" title={st.error}>
-        Didn't preload
+      <span className="absolute right-2 top-2 max-w-[85%] truncate rounded-full bg-paper/95 px-2 py-0.5 text-[11px] font-medium text-warn" title={st.error}>
+        Uses Google's preview
       </span>
     )
   return (
     <span className="absolute inset-x-0 bottom-0 h-1 bg-ink/20">
-      <span
-        className="block h-full origin-left bg-paper transition-transform duration-300"
-        style={{ transform: `scaleX(${st.size ? st.got / st.size : 0})` }}
-      />
+      <span className="block h-full origin-left bg-paper transition-transform duration-300" style={{ transform: `scaleX(${st.progress})` }} />
     </span>
   )
 }
@@ -487,49 +486,111 @@ function PreloadMenu({
   close: () => void
 }) {
   const [listing, setListing] = useState(false)
+  const c = driveCache
+  const q = QUALITIES.find((x) => x.id === c.settings.quality)!
   const sum = (l: DriveItem[]) => l.reduce((a, f) => a + f.size, 0)
   const option = (title: string, list: DriveItem[]) => (
     <button
       disabled={!list.length}
       onClick={() => {
-        void driveCache.enqueue(list)
+        void c.enqueue(list)
         close()
       }}
       className="w-full rounded-md px-3 py-2.5 text-left hover:bg-ink/[0.05] disabled:opacity-40 disabled:hover:bg-transparent"
     >
       <span className="block text-sm font-medium text-ink">{title}</span>
-      <span className="num block text-xs text-muted mt-0.5">
-        {plural(list.length, 'file')}, {bytes(sum(list))}
-      </span>
+      <span className="num block text-xs text-muted mt-0.5">{plural(list.length, 'clip')}, {bytes(sum(list))} on Drive</span>
     </button>
   )
   return (
     <>
       <div className="fixed inset-0 z-10" onClick={close} />
-      <div className="absolute right-0 top-10 z-20 w-80 rounded-lg border border-line bg-card p-2 shadow-[0_12px_32px_-12px_rgba(28,27,25,0.3)]">
-        {option('Selected clips', selected)}
-        {option('All videos in this folder', here)}
-        {hasSubfolders && (
-          <button
-            disabled={listing}
-            onClick={async () => {
-              setListing(true)
-              try {
-                void driveCache.enqueue(await everything())
-              } finally {
-                setListing(false)
-                close()
-              }
-            }}
-            className="w-full rounded-md px-3 py-2.5 text-left hover:bg-ink/[0.05] disabled:opacity-60"
-          >
-            <span className="block text-sm font-medium text-ink">Everything, including subfolders</span>
-            <span className="block text-xs text-muted mt-0.5">{listing ? 'Finding every video...' : 'Good for leaving it running on a whole event'}</span>
-          </button>
-        )}
-        <p className="px-3 pt-2 pb-1.5 text-xs text-muted leading-relaxed border-t border-line mt-1">
-          Downloads the originals into this browser in the background. Once a clip says Ready, it plays instantly and saves
-          without downloading again. Keep this tab open while it works.
+      <div className="absolute right-0 top-10 z-20 w-[22rem] rounded-lg border border-line bg-card shadow-[0_12px_32px_-12px_rgba(28,27,25,0.3)]">
+        <div className="p-4 border-b border-line">
+          <p className="text-xs uppercase tracking-[0.08em] text-muted">Quality</p>
+          <div className="mt-2 grid grid-cols-5 rounded-md border border-line p-0.5 text-xs">
+            {QUALITIES.map((x) => (
+              <button
+                key={x.id}
+                onClick={() => c.setQuality(x.id)}
+                className={`h-7 rounded-[5px] font-medium ${x.id === c.settings.quality ? 'bg-ink text-paper' : 'text-ink-2 hover:bg-ink/[0.05]'}`}
+              >
+                {x.label}
+              </button>
+            ))}
+          </div>
+          <p className="mt-2 text-xs text-muted">
+            {q.hint}.{' '}
+            {q.id === 'original'
+              ? 'Saving from Drive also gets faster, since nothing has to download again.'
+              : `Roughly ${bytes((q.bitrate / 8) * 3600 + 58e6)} per hour of footage.`}
+          </p>
+
+          <div className="mt-4 flex items-center justify-between gap-3">
+            <span className="text-xs uppercase tracking-[0.08em] text-muted">Space limit</span>
+            <select
+              value={c.settings.capGB}
+              onChange={(e) => c.setCap(Number(e.target.value))}
+              className="h-8 rounded-md border border-line bg-card px-2 text-sm"
+            >
+              {CAPS_GB.map((g) => (
+                <option key={g} value={g}>
+                  {g} GB
+                </option>
+              ))}
+            </select>
+          </div>
+          <p className="mt-1.5 text-xs text-muted">When it fills up, the clips you looked at longest ago are removed to make room.</p>
+
+          {canPickProxyFolder() && (
+            <div className="mt-4 flex items-center justify-between gap-3 text-sm">
+              <span className="text-xs uppercase tracking-[0.08em] text-muted">Stored in</span>
+              <span className="flex items-center gap-2 min-w-0">
+                <span className="truncate text-ink-2">{c.settings.where === 'folder' && c.folder ? c.folder.name : 'This browser'}</span>
+                <button
+                  className="shrink-0 text-muted underline underline-offset-4 hover:text-ink"
+                  onClick={async () => {
+                    try {
+                      if (c.settings.where === 'folder') await c.useBrowser()
+                      else await c.useFolder()
+                    } catch {
+                      /* closed the picker */
+                    }
+                  }}
+                >
+                  {c.settings.where === 'folder' ? 'use browser' : 'pick a folder'}
+                </button>
+              </span>
+            </div>
+          )}
+        </div>
+        <div className="p-2">
+          {option('Selected clips', selected)}
+          {option('All videos in this folder', here)}
+          {hasSubfolders && (
+            <button
+              disabled={listing}
+              onClick={async () => {
+                setListing(true)
+                try {
+                  void c.enqueue(await everything())
+                } finally {
+                  setListing(false)
+                  close()
+                }
+              }}
+              className="w-full rounded-md px-3 py-2.5 text-left hover:bg-ink/[0.05] disabled:opacity-60"
+            >
+              <span className="block text-sm font-medium text-ink">Everything, including subfolders</span>
+              <span className="block text-xs text-muted mt-0.5">{listing ? 'Finding every video...' : 'Good for leaving it running on a whole event'}</span>
+            </button>
+          )}
+        </div>
+        <p className="px-4 pb-4 text-xs text-muted leading-relaxed">
+          {q.id === 'original'
+            ? 'Downloads each original in the background and keeps it.'
+            : `Each clip is read from Drive and shrunk to ${q.label} on this computer, and only the small copy is kept.`}{' '}
+          Once a clip says Ready, it plays instantly. Keep this tab open while it works.
         </p>
       </div>
     </>
@@ -538,41 +599,59 @@ function PreloadMenu({
 
 function PreloadStrip() {
   const c = driveCache
-  if (!c.busy && !c.readyCount && !c.error) return null
-  const pct = c.bytesTotal ? c.bytesDone / c.bytesTotal : 0
+  if (!c.busy && !c.readyCount && !c.error && !c.folderNeedsPermission) return null
+  const q = QUALITIES.find((x) => x.id === c.settings.quality)!
+  const space = (
+    <span className="num text-muted">
+      {bytes(c.usedBytes)} of {c.settings.capGB} GB used
+    </span>
+  )
   return (
     <div className="mt-4 rounded-lg border border-line bg-card px-4 py-3 text-sm">
       {c.error && <p className="text-tally mb-2">{c.error}</p>}
+      {c.folderNeedsPermission && (
+        <p className="mb-2 flex flex-wrap items-center gap-2 text-ink-2">
+          Handoff needs permission to use your preload folder again.
+          <button className="underline underline-offset-4 hover:text-ink" onClick={() => c.regrantFolder()}>
+            Allow
+          </button>
+        </p>
+      )}
       {c.busy ? (
         <>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
             <span className="flex items-center gap-2 font-medium">
-              <Lightning size={14} weight="fill" className="text-tally" /> Preloading
+              <Lightning size={14} weight="fill" className="text-tally" />
+              {q.id === 'original' ? 'Preloading originals' : `Making ${q.label} copies`}
             </span>
             <span className="num text-muted">
-              {bytes(c.bytesDone)} / {bytes(c.bytesTotal)}, {plural(c.pendingCount, 'file')} left
+              {c.pendingCount ? `${Math.floor(c.batchProgress * 100)}%, ${plural(c.pendingCount, 'clip')} left` : 'Getting ready...'}
             </span>
+            {space}
             <button className="ml-auto text-muted hover:text-ink" onClick={() => c.stop()}>
               Stop
             </button>
           </div>
           <div className="mt-2.5">
-            <Bar value={pct} live />
+            <Bar value={c.batchProgress} live />
           </div>
         </>
       ) : (
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-          <span className="flex items-center gap-2 text-ink-2">
-            <Lightning size={14} weight="fill" className="text-ok" />
-            {plural(c.readyCount, 'clip')} preloaded in this browser, <span className="num">{bytes(c.usedBytes)}</span>
-          </span>
-          <button
-            className="ml-auto text-muted hover:text-ink"
-            onClick={() => confirm('Remove all preloaded clips from this browser? Your saved files are not affected.') && c.clear()}
-          >
-            Clear preloaded
-          </button>
-        </div>
+        c.readyCount > 0 && (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+            <span className="flex items-center gap-2 text-ink-2">
+              <Lightning size={14} weight="fill" className="text-ok" />
+              {plural(c.readyCount, 'clip')} ready to play instantly
+            </span>
+            {space}
+            <button
+              className="ml-auto text-muted hover:text-ink"
+              onClick={() => confirm('Remove all preloaded copies? Your saved files and Drive are not affected.') && c.clear()}
+            >
+              Clear preloaded
+            </button>
+          </div>
+        )
       )}
     </div>
   )
@@ -631,7 +710,9 @@ function Preview({ f, close, on, toggle }: { f: DriveItem; close: () => void; on
         </div>
         <p className="px-5 py-3 text-xs text-muted">
           {local && !localFailed
-            ? 'Playing the preloaded original, straight from this computer.'
+            ? driveCache.qualityOf(f.id) === 'original'
+              ? 'Playing the preloaded original, straight from this computer.'
+              : `Playing your ${QUALITIES.find((x) => x.id === driveCache.qualityOf(f.id))?.label} preview copy. Saving still gets you the original.`
             : localFailed
               ? "This clip's format can't play in a browser, so this is Google's copy. The saved file is still the original."
               : "Preview plays Google's streaming copy, which can look softer than the original. What you save is the original file."}

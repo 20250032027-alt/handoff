@@ -149,12 +149,14 @@ export function previewUrl(item: DriveItem) {
 }
 
 // Straight from Google, skipping the preload cache. The cache uses this to fill itself.
-async function fetchOriginal(item: DriveItem, signal: AbortSignal): Promise<Response> {
-  let res = await fetch(mediaUrl(item), { headers: keysHeader([item]), signal })
+async function fetchOriginal(item: DriveItem, signal: AbortSignal, range?: [number, number]): Promise<Response> {
+  const headers: Record<string, string> = { ...(keysHeader([item]) as Record<string, string>) }
+  if (range) headers.Range = `bytes=${range[0]}-${range[1] - 1}`
+  let res = await fetch(mediaUrl(item), { headers, signal })
   // acknowledgeAbuse is only allowed for some files. Retry without it if Google refuses.
   if (res.status === 400 || res.status === 403) {
     const plain = mediaUrl(item).replace('&acknowledgeAbuse=true', '')
-    const again = await fetch(plain, { headers: keysHeader([item]), signal })
+    const again = await fetch(plain, { headers, signal })
     if (again.ok) res = again
     else throw await toError(again)
   }
@@ -166,7 +168,7 @@ driveCache.setFetcher(fetchOriginal)
 
 // Preloaded clips come from the browser's storage instead of downloading again.
 async function openMedia(item: DriveItem, signal: AbortSignal): Promise<Response> {
-  const cached = await driveCache.file(item)
+  const cached = await driveCache.original(item)
   if (cached) return new Response(cached)
   return fetchOriginal(item, signal)
 }

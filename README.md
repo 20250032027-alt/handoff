@@ -51,7 +51,14 @@ Go to `/drive`, paste a folder shared as "Anyone with the link", and you can:
 - tick clips one by one, select all in a folder, or "select everything inside" a subfolder
 - save them **into a folder** (keeps Drive's subfolders, skips files you already have) or **as one .zip** (no size cap, works past 4 GB)
 
-**Preload** (the button above the clips) downloads originals into the browser in the background: the selected clips, all videos in the folder, or everything including subfolders. Preloaded clips get a Ready badge, play instantly from your computer, and save without downloading again. They stay until you click **Clear preloaded**.
+**Preload** (the button above the clips) gets clips ready to play instantly. Pick a quality first:
+
+- **360p, 480p, 720p (default), 1080p:** each clip is read from Drive in pieces and shrunk on your computer. Only the small copy is kept, so a whole event at 720p takes a few GB instead of hundreds. The original never sits on your disk.
+- **Original:** keeps the exact file. Biggest by far, but saving from Drive afterwards needs no download.
+
+A **space limit** (2 to 50 GB, default 10) caps the total. When it fills up, the clips you looked at longest ago are removed. In Chrome, Edge or Opera you can store copies in a folder you pick, like an external drive, instead of the browser. **Clear preloaded** removes everything.
+
+Saving always gives you the originals. Small copies are only for watching. Clips in formats a browser can't decode (10-bit, RAW) are skipped and keep using Google's preview.
 
 In Firefox, "Save to a folder" isn't available, but "One .zip" works and goes to Downloads.
 
