@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowClockwise, CaretDown, CaretUp, FilmStrip, FolderSimple, Image as ImageIcon, MagnifyingGlass, Play, Star, X } from '@phosphor-icons/react'
-import { peekThumb, scanFileList, scanHandle, thumbFor, type LocalItem, type Thumb } from '../lib/localLib'
+import { pauseThumbs, peekThumb, scanFileList, scanHandle, thumbFor, type LocalItem, type Thumb } from '../lib/localLib'
+import { makeSmoothCopy, probe, smoothCopy, type ClipInfo } from '../lib/clipInfo'
 import { getJSON, idbGet, idbSet, setJSON } from '../lib/store'
 import { bytes, plural } from '../lib/format'
 import { Button, Shell, useTitle } from '../components/ui'
@@ -391,14 +392,116 @@ function Player({
   const [autoNext, setAutoNext] = useState(() => getJSON<{ autoNext?: boolean }>('viewer-player', {}).autoNext || false)
   const video = useRef<HTMLVideoElement>(null)
   const [info, setInfo] = useState<Thumb | undefined>(() => peekThumb(it.key))
+  const [clip, setClip] = useState<ClipInfo | null>(null)
+  const [smooth, setSmooth] = useState<File | null>(null)
+  const [useSmooth, setUseSmooth] = useState(false)
+  const [making, setMaking] = useState<number | null>(null)
+  const [makeErr, setMakeErr] = useState('')
+  const [stutter, setStutter] = useState(false)
+  const makeCtl = useRef<AbortController | null>(null)
 
+  // Thumbnails wait while something is playing, so they don't fight over the decoder.
   useEffect(() => {
-    const u = URL.createObjectURL(it.file)
+    pauseThumbs(true)
+    return () => pauseThumbs(false)
+  }, [])
+
+  // Look inside the file, and check for a smooth copy made earlier.
+  useEffect(() => {
+    let alive = true
+    setClip(null)
+    setSmooth(null)
+    setUseSmooth(false)
+    setStutter(false)
+    setMakeErr('')
+    setMaking(null)
+    makeCtl.current?.abort()
+    if (it.kind !== 'video') return
+    probe(it.file).then((c) => alive && setClip(c))
+    smoothCopy(it.key).then((f) => {
+      if (alive && f) {
+        setSmooth(f)
+        setUseSmooth(true)
+      }
+    })
+    return () => {
+      alive = false
+    }
+  }, [it])
+
+  const src = useSmooth && smooth ? smooth : it.file
+  useEffect(() => {
+    const u = URL.createObjectURL(src)
     setUrl(u)
     setFailed(false)
     setInfo(peekThumb(it.key))
     return () => URL.revokeObjectURL(u)
-  }, [it])
+  }, [src, it.key])
+
+  // Watch for dropped frames, and recover from a stall by reloading at the same spot.
+  useEffect(() => {
+    if (it.kind !== 'video' || useSmooth) return
+    let lastDropped = 0
+    let lastTotal = 0
+    let bad = 0
+    const iv = setInterval(() => {
+      const v = video.current
+      if (!v || v.paused || v.playbackRate > 1) return
+      const q = v.getVideoPlaybackQuality?.()
+      if (!q) return
+      const d = q.droppedVideoFrames - lastDropped
+      const t = q.totalVideoFrames - lastTotal
+      lastDropped = q.droppedVideoFrames
+      lastTotal = q.totalVideoFrames
+      if (t > 10 && d / t > 0.08) bad++
+      else bad = Math.max(0, bad - 1)
+      if (bad >= 2) setStutter(true)
+    }, 1500)
+    return () => clearInterval(iv)
+  }, [it, url, useSmooth])
+
+  const stallTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const retried = useRef(false)
+  useEffect(() => {
+    retried.current = false
+  }, [url])
+  const onWaiting = () => {
+    if (stallTimer.current) clearTimeout(stallTimer.current)
+    stallTimer.current = setTimeout(() => {
+      const v = video.current
+      if (!v || retried.current || v.readyState >= 3) return
+      retried.current = true
+      const at = v.currentTime
+      v.load()
+      v.currentTime = at
+      void v.play().catch(() => {})
+      setStutter(true)
+    }, 5000)
+  }
+  const onPlaying = () => {
+    if (stallTimer.current) clearTimeout(stallTimer.current)
+  }
+
+  const makeSmooth = async () => {
+    setMakeErr('')
+    setMaking(0)
+    const ctl = new AbortController()
+    makeCtl.current = ctl
+    try {
+      const f = await makeSmoothCopy(it.key, it.file, (p) => setMaking(p), ctl.signal)
+      if (ctl.signal.aborted) return
+      setSmooth(f)
+      setUseSmooth(true)
+      setStutter(false)
+    } catch (e) {
+      if (!ctl.signal.aborted) setMakeErr((e as Error).message)
+    } finally {
+      setMaking(null)
+    }
+  }
+  useEffect(() => () => makeCtl.current?.abort(), [])
+
+  const showHelp = it.kind === 'video' && !useSmooth && (stutter || failed || clip?.heavy)
 
   useEffect(() => {
     if (video.current) video.current.playbackRate = rate
@@ -456,9 +559,11 @@ function Player({
       <div className="relative flex-1 min-h-0 flex items-center justify-center">
         {failed ? (
           <div className="max-w-md px-6 text-center text-paper/90">
-            <p className="font-medium">This clip can't play in a browser.</p>
+            <p className="font-medium">This clip can't play in a browser as it is.</p>
             <p className="mt-2 text-sm text-paper/60 leading-relaxed">
-              Some camera formats, like 10-bit or RAW, need an editing app or VLC. The file itself is fine.
+              {clip && clip.canDecode
+                ? 'A smooth copy should fix it. Use the button below.'
+                : 'Some camera formats, like 10-bit or RAW, need an editing app or VLC. The file itself is fine.'}
             </p>
           </div>
         ) : it.kind === 'photo' ? (
@@ -473,7 +578,10 @@ function Player({
               autoPlay
               playsInline
               className="max-h-full max-w-full"
+              preload="auto"
               onError={() => setFailed(true)}
+              onWaiting={onWaiting}
+              onPlaying={onPlaying}
               onLoadedMetadata={(e) => {
                 const v = e.currentTarget
                 v.playbackRate = rate
@@ -501,12 +609,57 @@ function Player({
         </button>
       </div>
 
+      {showHelp && (
+        <div className="shrink-0 flex flex-wrap items-center gap-x-4 gap-y-2 px-4 md:px-6 py-3 text-sm bg-paper/[0.06] text-paper/85 border-t border-paper/10">
+          <span className="flex-1 min-w-[260px] leading-relaxed">
+            {clip && !clip.canDecode
+              ? "This clip can't play in a browser."
+              : failed
+                ? "This clip won't play directly."
+                : stutter
+                  ? 'This clip is stuttering.'
+                  : 'This clip may stutter.'}{' '}
+            {clip?.why || 'It is heavy for this computer to play in a browser.'}{' '}
+            {clip?.canDecode !== false && 'A smooth 1080p copy plays without hiccups. It keeps the frame rate, and the original is not touched.'}
+          </span>
+          {clip?.canDecode !== false &&
+            (making !== null ? (
+              <span className="flex items-center gap-3">
+                <span className="num tabular-nums">Making smooth copy {Math.floor(making * 100)}%</span>
+                <button className="text-paper/60 hover:text-paper underline underline-offset-4" onClick={() => makeCtl.current?.abort()}>
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <button onClick={makeSmooth} className="h-8 rounded-md bg-paper px-3 text-sm font-medium text-ink hover:bg-paper/90">
+                Play a smooth copy
+              </button>
+            ))}
+          {makeErr && <span className="w-full text-tally">{makeErr}</span>}
+        </div>
+      )}
       <div className="shrink-0 flex flex-wrap items-center gap-x-6 gap-y-2 px-4 md:px-6 py-3 text-sm text-paper/70 border-t border-paper/10">
         <span className="num tabular-nums">
-          {[info?.width && info?.height ? `${info.width}×${info.height}` : '', info?.duration ? clock(info.duration) : '', bytes(it.size), new Date(it.modified).toLocaleString()]
+          {[clip?.label || (info?.width && info?.height ? `${info.width}×${info.height}` : ''), info?.duration ? clock(info.duration) : '', bytes(it.size), new Date(it.modified).toLocaleDateString()]
             .filter(Boolean)
             .join('  ·  ')}
         </span>
+        {smooth && (
+          <span className="flex items-center rounded-md border border-paper/15 p-0.5 text-xs">
+            <button
+              onClick={() => setUseSmooth(false)}
+              className={`h-6 rounded px-2 ${!useSmooth ? 'bg-paper text-ink' : 'text-paper/70 hover:bg-paper/10'}`}
+            >
+              Original
+            </button>
+            <button
+              onClick={() => setUseSmooth(true)}
+              className={`h-6 rounded px-2 ${useSmooth ? 'bg-paper text-ink' : 'text-paper/70 hover:bg-paper/10'}`}
+            >
+              Smooth copy
+            </button>
+          </span>
+        )}
         {it.kind === 'video' && (
           <>
             <span className="flex items-center gap-1">

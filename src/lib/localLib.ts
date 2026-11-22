@@ -71,9 +71,17 @@ function item(file: File, path: string, kind: 'video' | 'photo'): LocalItem {
 const mem = new Map<string, Thumb>()
 let active = 0
 const waiting: (() => void)[] = []
-const SLOTS = 3
+const SLOTS = 2
+// While a clip is playing, thumbnails wait, so they don't steal the video decoder.
+let paused = false
+const resumeWaiters: (() => void)[] = []
+export function pauseThumbs(p: boolean) {
+  paused = p
+  if (!p) while (resumeWaiters.length) resumeWaiters.shift()!()
+}
 
 async function slot<T>(fn: () => Promise<T>): Promise<T> {
+  while (paused) await new Promise<void>((r) => resumeWaiters.push(r))
   if (active >= SLOTS) await new Promise<void>((r) => waiting.push(r))
   active++
   try {
