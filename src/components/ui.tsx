@@ -1,6 +1,6 @@
 import { useEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from 'react'
 
-export function Shell({ right, nav, children }: { right?: ReactNode; nav?: 'receive' | 'drive'; children: ReactNode }) {
+export function Shell({ right, nav, children }: { right?: ReactNode; nav?: 'receive' | 'drive' | 'viewer'; children: ReactNode }) {
   return (
     <div className="min-h-[100dvh] flex flex-col">
       <header className="w-full border-b border-line bg-paper/80 backdrop-blur sticky top-0 z-10">
@@ -22,6 +22,9 @@ export function Shell({ right, nav, children }: { right?: ReactNode; nav?: 'rece
               </a>
               <a href="/drive" className={`rounded-md px-3 h-8 inline-flex items-center ${nav === 'drive' ? 'bg-ink/[0.06] text-ink font-medium' : 'text-muted hover:text-ink'}`}>
                 From Drive
+              </a>
+              <a href="/view" className={`rounded-md px-3 h-8 inline-flex items-center ${nav === 'viewer' ? 'bg-ink/[0.06] text-ink font-medium' : 'text-muted hover:text-ink'}`}>
+                Viewer
               </a>
             </nav>
           )}

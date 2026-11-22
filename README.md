@@ -34,6 +34,16 @@ Turn on **Let the team watch** on the Receive page and you get a second link, se
 - Some camera formats (10-bit, RAW) won't play in a browser. Teammates can still save those.
 - It needs folder mode (Chrome, Edge, Opera). Firefox's zip mode has nothing to serve from.
 
+## Viewer
+
+The **Viewer** tab plays footage straight off your own drive. Pick a folder and every video and photo in it, including subfolders, shows up with thumbnails, length and resolution. Click a clip and it plays at full quality right away. Nothing is uploaded or copied.
+
+- Search by name, filter to videos, photos or starred clips, and sort by name, date or size.
+- In the player: Space plays and pauses, the left and right arrows skip 5 seconds, comma and period step one frame, the up and down arrows go to the previous and next clip, S stars a clip, and Esc closes. It also has 0.5x to 2x speed and an option to play the next clip automatically.
+- Thumbnails are saved after the first visit, so reopening a folder is instant. Chrome, Edge and Opera also remember the folder.
+- It only reads the folder. It never changes or deletes anything.
+- Formats a browser can't decode (10-bit, RAW) say so and point you to an editing app or VLC.
+
 ## Keeping it on all the time
 
 1. Install Handoff as an app: use the "Install as an app" button, or the install icon in Chrome's address bar.

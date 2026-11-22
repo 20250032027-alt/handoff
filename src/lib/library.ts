@@ -44,10 +44,11 @@ async function fileAt(dir: FileSystemDirectoryHandle, path: string): Promise<Fil
   return (await d.getFileHandle(name)).getFile()
 }
 
-function thumbOf(file: File, kind: 'video' | 'photo'): Promise<{ jpeg: string; duration: number }> {
+export function thumbOf(file: File, kind: 'video' | 'photo'): Promise<{ jpeg: string; duration: number; width: number; height: number }> {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(file)
     let v: HTMLVideoElement | null = null
+    let dims = { width: 0, height: 0 }
     const done = (jpeg: string, duration = 0) => {
       if (v) {
         v.onerror = null
@@ -55,9 +56,10 @@ function thumbOf(file: File, kind: 'video' | 'photo'): Promise<{ jpeg: string; d
         v.load()
       }
       URL.revokeObjectURL(url)
-      resolve({ jpeg, duration })
+      resolve({ jpeg, duration, ...dims })
     }
     const draw = (el: HTMLVideoElement | HTMLImageElement, w: number, h: number, duration = 0) => {
+      dims = { width: w, height: h }
       try {
         const scale = 360 / Math.max(1, w)
         const c = document.createElement('canvas')
