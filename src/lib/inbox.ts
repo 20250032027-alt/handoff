@@ -6,7 +6,7 @@ import type { DataConnection } from 'peerjs'
 import { createXXHash64, type IHasher } from 'hash-wasm'
 import { downloadZip } from 'client-zip'
 import { downloadStream } from './download'
-import { makePeer } from './peer'
+import { makePeer, routeOf, type Route } from './peer'
 import { PEER_PREFIX, WRITE_BLOCK, type EditorMsg, type ManifestFile, type SenderMsg } from './protocol'
 import { safePath, safeSegment } from './files'
 import { SpeedMeter } from './format'
@@ -39,6 +39,7 @@ export interface SessionView {
   failed: string[]
   startedAt: number
   finishedAt: number
+  route: Route
 }
 
 export interface HistoryItem {
@@ -110,6 +111,7 @@ class IncomingSession {
       failed: [],
       startedAt: 0,
       finishedAt: 0,
+      route: 'unknown',
     }
     conn.on('data', (d) => {
       this.queue.push(d as string | ArrayBuffer)
@@ -117,6 +119,16 @@ class IncomingSession {
     })
     conn.on('close', () => this.onClose())
     conn.on('error', () => this.onClose())
+    const check = async () => {
+      if (!conn.open && this.view.status !== 'connected') return
+      const r = await routeOf(conn.peerConnection)
+      if (r !== this.view.route) {
+        this.view.route = r
+        this.changed()
+      }
+      if (this.view.status !== 'done' && this.view.status !== 'dropped') setTimeout(check, 10000)
+    }
+    setTimeout(check, 2000)
   }
 
   send(msg: EditorMsg) {

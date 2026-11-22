@@ -228,6 +228,28 @@ export default function Sender({ editorId, editorName }: { editorId: string; edi
             <Stat label="Time left" value={moving ? duration(left) : '--'} />
           </div>
 
+          {moving && v.route !== 'unknown' && (
+            <p className="mt-5 text-sm text-ink-2 flex items-start gap-2">
+              <span className={`mt-1.5 size-2 shrink-0 rounded-full ${v.route === 'local' ? 'bg-ok' : 'bg-warn'}`} />
+              {v.route === 'local'
+                ? 'Going straight across your Wi-Fi. This is as fast as your network allows.'
+                : `Going out over the internet, so the speed is capped by this device's upload speed. If you're near ${editor}, put both devices on the same Wi-Fi (not mobile data) and turn off any VPN. It can be much faster.`}
+            </p>
+          )}
+
+          {v.hidden && (
+            <div className="mt-5 flex items-start gap-3 rounded-lg border border-line bg-warn-soft px-4 py-3 text-sm text-warn">
+              <Warning size={16} weight="bold" className="mt-0.5 shrink-0" />
+              <span className="flex-1">
+                This page left the screen for a while. Phones slow down or pause pages in the background, so keep Handoff open
+                and on screen until it finishes.
+              </span>
+              <button className="shrink-0 underline underline-offset-4" onClick={() => out.dismissHidden()}>
+                Got it
+              </button>
+            </div>
+          )}
+
           <div className="mt-8 rounded-lg border border-line bg-card px-5 py-4 text-sm text-ink-2 leading-relaxed">
             {v.status === 'asking'
               ? `Waiting for ${editor} to accept. They'll see your name and how much you're sending.`

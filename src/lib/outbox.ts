@@ -4,7 +4,7 @@
 import type Peer from 'peerjs'
 import type { DataConnection } from 'peerjs'
 import { createXXHash64, type IHasher } from 'hash-wasm'
-import { makePeer } from './peer'
+import { makePeer, routeOf, type Route } from './peer'
 import {
   CHANNEL_HIGH_WATER,
   CHANNEL_LOW_WATER,
@@ -47,6 +47,8 @@ export interface OutView {
   current: number
   speed: number
   error: string
+  route: Route
+  hidden: boolean // page went to the background mid-transfer
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -88,10 +90,15 @@ export class Outbox {
       current: -1,
       speed: 0,
       error: '',
+      route: 'unknown',
+      hidden: false,
     }
   }
 
   start() {
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && this.view.status === 'sending') this.set({ hidden: true })
+    })
     const peer = makePeer()
     this.peer = peer
     peer.on('open', () => this.connect())
@@ -158,6 +165,13 @@ export class Outbox {
       opened = true
       clearTimeout(timeout)
       if (gen !== this.gen) return
+      // Check the route now and again later, since it can settle a few seconds in.
+      const check = async () => {
+        if (gen !== this.gen || !conn.open) return
+        this.set({ route: await routeOf(conn.peerConnection) })
+        setTimeout(check, 10000)
+      }
+      setTimeout(check, 1500)
       conn.dataChannel.bufferedAmountLowThreshold = CHANNEL_LOW_WATER
       this.send({ t: 'hi', name: this.myName(), clientId: this.clientId })
     })
@@ -245,6 +259,10 @@ export class Outbox {
     this.picked = []
     this.set({ status: 'connecting', current: -1, bytesDone: 0, totalBytes: 0, speed: 0 })
     this.retry(500)
+  }
+
+  dismissHidden() {
+    this.set({ hidden: false })
   }
 
   reset() {

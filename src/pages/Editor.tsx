@@ -612,6 +612,13 @@ function SessionRow({ s, i, inbox }: { s: SessionView; i: number; inbox: Inbox }
             </span>
             <span className="num truncate text-ink-2">{s.current}</span>
           </p>
+          {s.route !== 'unknown' && (
+            <p className="mt-1 text-sm text-muted">
+              {s.route === 'local'
+                ? 'Direct over your network.'
+                : `Over the internet, so it's limited by ${s.name}'s upload speed. If you're on the same Wi-Fi, check they aren't on mobile data or a VPN.`}
+            </p>
+          )}
           {s.filesSkipped > 0 && (
             <p className="mt-1 text-sm text-muted">Skipped {plural(s.filesSkipped, 'file')} you already had.</p>
           )}
