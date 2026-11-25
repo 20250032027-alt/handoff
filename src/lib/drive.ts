@@ -19,6 +19,8 @@ export interface DriveItem {
   width: number
   height: number
   modified: string
+  created: number // when it was put on Drive
+  taken: number // when a photo was shot, from its camera data (0 if unknown)
   resourceKey: string
   isFolder: boolean
   isVideo: boolean
@@ -96,7 +98,7 @@ async function toError(res: Response): Promise<DriveError> {
   return new DriveError(msg || `Google Drive said ${res.status}.`, reason || String(res.status))
 }
 
-const FIELDS = 'id,name,mimeType,size,thumbnailLink,videoMediaMetadata(durationMillis,width,height),imageMediaMetadata(width,height),modifiedTime,resourceKey'
+const FIELDS = 'id,name,mimeType,size,thumbnailLink,videoMediaMetadata(durationMillis,width,height),imageMediaMetadata(width,height,time),modifiedTime,createdTime,resourceKey'
 
 function toItem(f: Record<string, any>, path: string): DriveItem {
   const mime: string = f.mimeType || ''
@@ -111,6 +113,8 @@ function toItem(f: Record<string, any>, path: string): DriveItem {
     width: Number(f.videoMediaMetadata?.width || f.imageMediaMetadata?.width || 0),
     height: Number(f.videoMediaMetadata?.height || f.imageMediaMetadata?.height || 0),
     modified: f.modifiedTime || '',
+    created: f.createdTime ? Date.parse(f.createdTime) : 0,
+    taken: exifTime(f.imageMediaMetadata?.time),
     resourceKey: f.resourceKey || '',
     isFolder: mime === FOLDER,
     isVideo: mime.startsWith('video/') || /\.(mp4|mov|mxf|mts|m2ts|avi|mkv|braw|r3d|crm|insv|lrv)$/i.test(f.name || ''),
@@ -118,6 +122,17 @@ function toItem(f: Record<string, any>, path: string): DriveItem {
     isGoogleDoc: mime.startsWith('application/vnd.google-apps.') && mime !== FOLDER,
     path,
   }
+}
+
+// Drive gives photo times as "2026:11:20 14:03:22", in the camera's local time.
+function exifTime(t?: string): number {
+  const m = t && /^(\d{4}):(\d{2}):(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/.exec(t)
+  return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime() : 0
+}
+
+// The best guess for when something was filmed or shot.
+export function shotTime(f: DriveItem): number {
+  return f.taken || (f.modified ? Date.parse(f.modified) : 0) || f.created
 }
 
 export async function getMeta(link: ParsedLink): Promise<DriveItem> {

@@ -12,10 +12,11 @@ import {
   previewUrl,
   saveAsZip,
   saveToFolder,
+  shotTime,
   type DriveItem,
   type SaveProgress,
 } from '../lib/drive'
-import { SpeedMeter, bytes, duration, plural, speed } from '../lib/format'
+import { SpeedMeter, bytes, dateRange, duration, longDate, plural, shortDate, speed, summary } from '../lib/format'
 import { Bar, Button, Pill, Shell, inputClass, useLeaveWarning, useTitle, useWakeLock } from '../components/ui'
 
 const canFolder = typeof window !== 'undefined' && 'showDirectoryPicker' in window
@@ -133,7 +134,47 @@ export default function Drive() {
     [items, videosOnly],
   )
   const folders = visible.filter((f) => f.isFolder)
-  const files = visible.filter((f) => !f.isFolder)
+  const [sort, setSortState] = useState<string>(() => getLocal('drive-sort') || 'name')
+  const setSort = (v: string) => {
+    setSortState(v)
+    setLocal('drive-sort', v)
+  }
+  const files = useMemo(() => {
+    const list = visible.filter((f) => !f.isFolder)
+    if (sort === 'newest') list.sort((a, b) => shotTime(b) - shotTime(a))
+    else if (sort === 'oldest') list.sort((a, b) => shotTime(a) - shotTime(b))
+    else if (sort === 'largest') list.sort((a, b) => b.size - a.size)
+    return list
+  }, [visible, sort])
+  const here = useMemo(() => (items || []).filter((f) => !f.isFolder), [items])
+  const hereTimes = here.map(shotTime).filter(Boolean)
+  // Totals including every subfolder, worked out on request.
+  const [deep, setDeep] = useState<{ id: string; text: string } | 'loading' | null>(null)
+  const countDeep = async () => {
+    const top = crumbs[crumbs.length - 1]
+    setDeep('loading')
+    try {
+      const all: DriveItem[] = []
+      let subfolders = 0
+      const walk = async (id: string, rk: string, path: string) => {
+        for (const it of await listFolder({ id, resourceKey: rk }, path)) {
+          if (it.isFolder) {
+            subfolders++
+            await walk(it.id, it.resourceKey, [path, it.name].filter(Boolean).join('/'))
+          } else all.push(it)
+        }
+      }
+      await walk(top.id, top.resourceKey, top.path)
+      const t = all.map(shotTime).filter(Boolean)
+      setDeep({
+        id: top.id,
+        text: `${summary(all)} across ${plural(subfolders + 1, 'folder')}${t.length ? `, ${dateRange(Math.min(...t), Math.max(...t))}` : ''}`,
+      })
+    } catch (e) {
+      setDeep(null)
+      setError((e as Error).message)
+    }
+  }
   const allHerePicked = files.filter(downloadable).length > 0 && files.filter(downloadable).every((f) => picked.has(f.id))
 
   const toggle = (f: DriveItem) => {
@@ -336,6 +377,35 @@ export default function Drive() {
               )}
             </div>
           </div>
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted">
+            <span className="tabular-nums">
+              <span className="text-ink-2">In this folder:</span>{' '}
+              {folders.length ? `${plural(folders.length, 'folder')}, ` : ''}
+              {summary(here)}
+              {hereTimes.length ? `, ${dateRange(Math.min(...hereTimes), Math.max(...hereTimes))}` : ''}
+            </span>
+            {folders.length > 0 &&
+              (deep && deep !== 'loading' && deep.id === crumbs[crumbs.length - 1]?.id ? (
+                <span className="tabular-nums">
+                  <span className="text-ink-2">With subfolders:</span> {deep.text}
+                </span>
+              ) : (
+                <button className="underline underline-offset-4 hover:text-ink" onClick={countDeep} disabled={deep === 'loading'}>
+                  {deep === 'loading' ? 'Counting...' : 'Count subfolders too'}
+                </button>
+              ))}
+            <select
+              value={sort}
+              aria-label="Sort"
+              onChange={(e) => setSort(e.target.value)}
+              className="ml-auto h-8 rounded-md border border-line bg-card px-2 text-sm text-ink"
+            >
+              <option value="name">By name</option>
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+              <option value="largest">Largest first</option>
+            </select>
+          </div>
           <PreloadStrip />
 
           {loading && <div className="py-10 text-sm text-muted">Loading...</div>}
@@ -449,8 +519,8 @@ function Tile({ f, i, on, can, toggle, play }: { f: DriveItem; i: number; on: bo
       </div>
       <button onClick={can ? toggle : undefined} className="mt-2.5 block w-full text-left">
         <span className="block truncate text-sm font-medium">{f.name}</span>
-        <span className="num block text-xs text-muted mt-0.5">
-          {f.isGoogleDoc ? 'Google file, skip' : [bytes(f.size), f.height ? `${f.height}p` : ''].filter(Boolean).join(' · ')}
+        <span className="num block text-xs text-muted mt-0.5 truncate">
+          {f.isGoogleDoc ? 'Google file, skip' : [bytes(f.size), f.height ? `${f.height}p` : '', shortDate(shotTime(f))].filter(Boolean).join(' · ')}
         </span>
       </button>
     </div>
@@ -771,7 +841,16 @@ function Preview({ f, close, on, toggle }: { f: DriveItem; close: () => void; on
             <iframe src={previewUrl(f)} className="size-full" allow="autoplay; fullscreen" allowFullScreen title={f.name} />
           )}
         </div>
-        <p className="px-5 py-3 text-xs text-muted">
+        <p className="px-5 pt-3 text-xs text-ink-2 tabular-nums">
+          {[
+            f.taken ? `Shot ${longDate(f.taken)}` : f.modified ? `Modified ${longDate(Date.parse(f.modified))}` : '',
+            f.created ? `Put on Drive ${longDate(f.created)}` : '',
+            f.width && f.height ? `${f.width}×${f.height}` : '',
+          ]
+            .filter(Boolean)
+            .join('  ·  ')}
+        </p>
+        <p className="px-5 pb-3 pt-1 text-xs text-muted">
           {local && !localFailed
             ? driveCache.qualityOf(f.id) === 'original'
               ? 'Playing the preloaded original, straight from this computer.'

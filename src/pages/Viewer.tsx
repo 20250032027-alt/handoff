@@ -3,10 +3,12 @@ import { ArrowClockwise, CaretDown, CaretUp, FilmStrip, FolderSimple, Image as I
 import { pauseThumbs, peekThumb, scanFileList, scanHandle, thumbFor, type LocalItem, type Thumb } from '../lib/localLib'
 import { makeSmoothCopy, probe, smoothCopy, type ClipInfo } from '../lib/clipInfo'
 import { getJSON, idbGet, idbSet, setJSON } from '../lib/store'
-import { bytes, plural } from '../lib/format'
+import { bytes, dateRange, longDate, plural, shortDate, summary } from '../lib/format'
 import { Button, Shell, useTitle } from '../components/ui'
 
 const canPick = typeof window !== 'undefined' && 'showDirectoryPicker' in window
+// Recording date from inside the file once it's been read, otherwise the file's own date.
+const when = (it: LocalItem) => peekThumb(it.key)?.taken || it.modified
 type Filter = 'all' | 'video' | 'photo' | 'starred'
 type Sort = 'name' | 'newest' | 'oldest' | 'largest'
 
@@ -23,6 +25,17 @@ export default function Viewer() {
   const [stars, setStars] = useState<Set<string>>(() => new Set(getJSON<string[]>('stars', [])))
   const [open, setOpen] = useState<number | null>(null)
   const fallbackInput = useRef<HTMLInputElement>(null)
+  // Bumped (at most a few times a second) as recording dates come in, so totals and sorting catch up.
+  const [datesSeen, setDatesSeen] = useState(0)
+  const bumpPending = useRef(false)
+  const onThumb = useCallback(() => {
+    if (bumpPending.current) return
+    bumpPending.current = true
+    setTimeout(() => {
+      bumpPending.current = false
+      setDatesSeen((n) => n + 1)
+    }, 400)
+  }, [])
 
   useTitle(folderName ? `${folderName} · Viewer · Handoff` : 'Viewer · Handoff')
 
@@ -89,15 +102,16 @@ export default function Viewer() {
     const byName = (a: LocalItem, b: LocalItem) => a.path.localeCompare(b.path, undefined, { numeric: true })
     list.sort(
       sort === 'newest'
-        ? (a, b) => b.modified - a.modified
+        ? (a, b) => when(b) - when(a)
         : sort === 'oldest'
-          ? (a, b) => a.modified - b.modified
+          ? (a, b) => when(a) - when(b)
           : sort === 'largest'
             ? (a, b) => b.size - a.size
             : byName,
     )
     return list
-  }, [items, query, filter, sort, stars])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, query, filter, sort, stars, sort === 'name' ? 0 : datesSeen])
 
   // Group by subfolder when sorting by name; one flat grid otherwise.
   const groups = useMemo(() => {
@@ -111,9 +125,15 @@ export default function Viewer() {
   }, [visible, sort])
 
   const totals = useMemo(() => {
-    const v = items?.filter((i) => i.kind === 'video').length || 0
-    return { videos: v, photos: (items?.length || 0) - v, size: items?.reduce((a, i) => a + i.size, 0) || 0 }
-  }, [items])
+    if (!items?.length) return { text: 'No videos or photos', range: '' }
+    let min = Infinity
+    let max = 0
+    for (const i of items) {
+      min = Math.min(min, when(i))
+      max = Math.max(max, when(i))
+    }
+    return { text: summary(items), range: dateRange(min, max) }
+  }, [items, datesSeen])
 
   const fallback = (
     <input
@@ -188,8 +208,8 @@ export default function Viewer() {
             <span className="text-xs uppercase tracking-[0.08em] text-muted">Viewing</span>
             <h1 className="mt-1 text-2xl md:text-3xl font-semibold tracking-tight truncate">{folderName}</h1>
             <p className="mt-1 text-sm text-muted tabular-nums">
-              {plural(totals.videos, 'video')}
-              {totals.photos ? `, ${plural(totals.photos, 'photo')}` : ''}, {bytes(totals.size)}
+              {totals.text}
+              {totals.range ? `, ${totals.range}` : ''}
             </p>
           </div>
           <div className="ml-auto flex items-center gap-2">
@@ -259,7 +279,14 @@ export default function Viewer() {
             {groups.length > 1 && (
               <div className="flex items-baseline gap-3 pb-3">
                 <h2 className="font-medium tracking-tight truncate">{g.dir || folderName}</h2>
-                <span className="text-sm text-muted tabular-nums">{g.items.length}</span>
+                <span className="text-sm text-muted tabular-nums">
+                  {summary(g.items)}
+                  {(() => {
+                    const ts = g.items.map(when)
+                    const r = dateRange(Math.min(...ts), Math.max(...ts))
+                    return r ? `, ${r}` : ''
+                  })()}
+                </span>
               </div>
             )}
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-x-4 gap-y-6">
@@ -269,6 +296,7 @@ export default function Viewer() {
                   it={it}
                   i={gi * 4 + i}
                   starred={isStarred(it)}
+                  onThumb={onThumb}
                   star={() => toggleStar(it)}
                   play={() => setOpen(flat.indexOf(it))}
                 />
@@ -293,7 +321,21 @@ export default function Viewer() {
   )
 }
 
-function Tile({ it, i, starred, star, play }: { it: LocalItem; i: number; starred: boolean; star: () => void; play: () => void }) {
+function Tile({
+  it,
+  i,
+  starred,
+  star,
+  play,
+  onThumb,
+}: {
+  it: LocalItem
+  i: number
+  starred: boolean
+  star: () => void
+  play: () => void
+  onThumb: () => void
+}) {
   const ref = useRef<HTMLButtonElement>(null)
   const [t, setT] = useState<Thumb | undefined>(() => peekThumb(it.key))
   useEffect(() => {
@@ -305,7 +347,11 @@ function Tile({ it, i, starred, star, play }: { it: LocalItem; i: number; starre
       (entries) => {
         if (!entries.some((e) => e.isIntersecting)) return
         io.disconnect()
-        thumbFor(it).then((x) => !cancelled && setT(x))
+        thumbFor(it).then((x) => {
+          if (cancelled) return
+          setT(x)
+          onThumb()
+        })
       },
       { rootMargin: '400px' },
     )
@@ -314,7 +360,7 @@ function Tile({ it, i, starred, star, play }: { it: LocalItem; i: number; starre
       cancelled = true
       io.disconnect()
     }
-  }, [it, t])
+  }, [it, t, onThumb])
   const Icon = it.kind === 'video' ? FilmStrip : ImageIcon
   return (
     <div className="group" style={{ ['--i' as string]: Math.min(i, 12) }}>
@@ -354,7 +400,9 @@ function Tile({ it, i, starred, star, play }: { it: LocalItem; i: number; starre
         </button>
       </div>
       <p className="mt-2 truncate text-sm font-medium">{it.name}</p>
-      <p className="num text-xs text-muted mt-0.5">{[bytes(it.size), t?.height ? `${t.height}p` : ''].filter(Boolean).join(' · ')}</p>
+      <p className="num text-xs text-muted mt-0.5 truncate">
+        {[bytes(it.size), t?.height ? `${t.height}p` : '', shortDate(t?.taken || it.modified, true)].filter(Boolean).join(' · ')}
+      </p>
     </div>
   )
 }
@@ -640,7 +688,12 @@ function Player({
       )}
       <div className="shrink-0 flex flex-wrap items-center gap-x-6 gap-y-2 px-4 md:px-6 py-3 text-sm text-paper/70 border-t border-paper/10">
         <span className="num tabular-nums">
-          {[clip?.label || (info?.width && info?.height ? `${info.width}×${info.height}` : ''), info?.duration ? clock(info.duration) : '', bytes(it.size), new Date(it.modified).toLocaleDateString()]
+          {[
+            clip?.label || (info?.width && info?.height ? `${info.width}×${info.height}` : ''),
+            info?.duration ? clock(info.duration) : '',
+            bytes(it.size),
+            peekThumb(it.key)?.taken ? `Recorded ${longDate(peekThumb(it.key)!.taken!)}` : `Modified ${longDate(it.modified)}`,
+          ]
             .filter(Boolean)
             .join('  ·  ')}
         </span>

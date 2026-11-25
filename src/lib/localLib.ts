@@ -21,6 +21,28 @@ export interface Thumb {
   duration: number
   width: number
   height: number
+  taken?: number // when it was recorded, from inside the file (0 if the file doesn't say)
+}
+
+// The recording date the camera wrote into the file, which survives copying.
+async function readTaken(it: LocalItem): Promise<number> {
+  try {
+    if (it.kind === 'photo') {
+      const head = new Uint8Array(await it.file.slice(0, 128 * 1024).arrayBuffer())
+      const text = new TextDecoder('latin1').decode(head)
+      const m = /(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})/.exec(text)
+      return m ? new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime() : 0
+    }
+    const { Input, BlobSource, ALL_FORMATS } = await import('mediabunny')
+    const input = new Input({ source: new BlobSource(it.file), formats: ALL_FORMATS })
+    const tags = await input.getMetadataTags()
+    const d = tags.date || tags.creationTime
+    const t = d ? d.getTime() : 0
+    // Some cameras write 1904 or 1970 when their clock was never set.
+    return t > Date.UTC(1995, 0, 1) ? t : 0
+  } catch {
+    return 0
+  }
 }
 
 export async function scanHandle(root: FileSystemDirectoryHandle): Promise<LocalItem[]> {
@@ -97,10 +119,14 @@ export async function thumbFor(it: LocalItem): Promise<Thumb> {
   if (hit) return hit
   const stored = await idbGet<Thumb>('vthumb:' + it.key).catch(() => undefined)
   if (stored) {
+    if (stored.taken === undefined) {
+      stored.taken = await readTaken(it)
+      void idbSet('vthumb:' + it.key, stored).catch(() => {})
+    }
     mem.set(it.key, stored)
     return stored
   }
-  const t = await slot(() => thumbOf(it.file, it.kind))
+  const t: Thumb = await slot(async () => ({ ...(await thumbOf(it.file, it.kind)), taken: await readTaken(it) }))
   mem.set(it.key, t)
   if (t.jpeg || t.duration) void idbSet('vthumb:' + it.key, t).catch(() => {})
   return t
