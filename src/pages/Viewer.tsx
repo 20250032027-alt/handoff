@@ -212,7 +212,8 @@ export default function Viewer() {
               {totals.range ? `, ${totals.range}` : ''}
             </p>
           </div>
-          <div className="ml-auto flex items-center gap-2">
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            <NamesMenu items={visible} folderName={folderName} />
             {handle && canPick && (
               <Button kind="ghost" size="sm" onClick={() => load(handle)} disabled={scanning} aria-label="Look for new files">
                 <ArrowClockwise size={14} weight="bold" /> {scanning ? 'Reading...' : 'Refresh'}
@@ -318,6 +319,42 @@ export default function Viewer() {
         />
       )}
     </Shell>
+  )
+}
+
+// Copy or save the names of what's shown, e.g. to compare against a Drive folder.
+function NamesMenu({ items, folderName }: { items: LocalItem[]; folderName: string }) {
+  const [copied, setCopied] = useState(false)
+  const text = items.map((i) => i.name).join('\n')
+  return (
+    <>
+      <Button
+        kind="ghost"
+        size="sm"
+        disabled={!items.length}
+        onClick={async () => {
+          await navigator.clipboard.writeText(text).catch(() => {})
+          setCopied(true)
+          setTimeout(() => setCopied(false), 1800)
+        }}
+      >
+        {copied ? `Copied ${items.length}` : 'Copy names'}
+      </Button>
+      <Button
+        kind="ghost"
+        size="sm"
+        disabled={!items.length}
+        onClick={() => {
+          const a = document.createElement('a')
+          a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }))
+          a.download = `${folderName || 'files'} - names.txt`
+          a.click()
+          setTimeout(() => URL.revokeObjectURL(a.href), 2000)
+        }}
+      >
+        Save names as .txt
+      </Button>
+    </>
   )
 }
 

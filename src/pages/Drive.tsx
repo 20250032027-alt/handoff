@@ -3,6 +3,7 @@ import { ArrowRight, CaretRight, Check, FileText, FilmStrip, FolderSimple, Image
 import { CAPS_GB, QUALITIES, canPickProxyFolder, canPreload, driveCache } from '../lib/driveCache'
 import { canStreamDownload, downloadStream } from '../lib/download'
 import { getLocal, setLocal } from '../lib/store'
+import { folderFileNames, zipFileNames } from '../lib/zipNames'
 import {
   DRIVE_KEY,
   DriveError,
@@ -76,6 +77,7 @@ export default function Drive() {
     if (!parsed) return setError("That doesn't look like a Google Drive link.")
     setLoading(true)
     setPicked(new Map())
+    setOnlyIds(null)
     try {
       const meta = await getMeta(parsed)
       if (meta.isFolder) {
@@ -129,10 +131,11 @@ export default function Drive() {
   }
 
   const downloadable = (f: DriveItem) => !f.isFolder && !f.isGoogleDoc
-  const [namePicker, setNamePicker] = useState(false)
+  const [namePicker, setNamePicker] = useState<false | 'only' | 'except'>(false)
+  const [onlyIds, setOnlyIds] = useState<Set<string> | null>(null)
   const visible = useMemo(
-    () => (items || []).filter((f) => !videosOnly || f.isFolder || f.isVideo),
-    [items, videosOnly],
+    () => (items || []).filter((f) => (!videosOnly || f.isFolder || f.isVideo) && (!onlyIds || f.isFolder || onlyIds.has(f.id))),
+    [items, videosOnly, onlyIds],
   )
   const folders = visible.filter((f) => f.isFolder)
   const [sort, setSortState] = useState<string>(() => getLocal('drive-sort') || 'name')
@@ -213,34 +216,38 @@ export default function Drive() {
     }
   }
 
-  // Pick files by pasting their names, e.g. a list of failed downloads.
-  const selectByNames = async (text: string, deepSearch: boolean) => {
+  // Pick files by a list of names. "only" picks the ones on the list (like failed
+  // downloads); "except" picks everything NOT on it (what you don't have yet).
+  const selectByNames = async (text: string, deepSearch: boolean, mode: 'only' | 'except'): Promise<NameResult> => {
     const typed = new Map<string, string>()
     for (const n of text.match(/[^\s:,;"'<>|\\/]+\.[A-Za-z0-9]{2,5}\b/g) || []) if (!typed.has(n.toLowerCase())) typed.set(n.toLowerCase(), n)
-    const wanted = Array.from(typed.keys())
-    if (!wanted.length) return { found: 0, missing: [] as string[], none: true }
+    if (!typed.size) return { mode, found: 0, matched: 0, missing: [], none: true }
     const pool: DriveItem[] = (items || []).filter(downloadable)
     if (deepSearch) {
       const top = crumbs[crumbs.length - 1]
       const walk = async (id: string, rk: string, path: string) => {
         for (const it of await listFolder({ id, resourceKey: rk }, path)) {
           if (it.isFolder) await walk(it.id, it.resourceKey, [path, it.name].filter(Boolean).join('/'))
-          else if (downloadable(it) && path !== top.path) pool.push(it)
+          else if (downloadable(it)) pool.push(it)
         }
       }
       for (const f of (items || []).filter((x) => x.isFolder)) await walk(f.id, f.resourceKey, [top.path, f.name].filter(Boolean).join('/'))
     }
-    const byName = new Map<string, DriveItem[]>()
-    for (const f of pool) {
-      const k = f.name.toLowerCase()
-      byName.set(k, [...(byName.get(k) || []), f])
-    }
     const next = new Map(picked)
+    if (mode === 'except') {
+      const left = pool.filter((f) => !typed.has(f.name.toLowerCase()))
+      for (const f of left) next.set(f.id, f)
+      setPicked(next)
+      setOnlyIds(new Set(left.map((f) => f.id)))
+      return { mode, found: left.length, matched: pool.length - left.length, missing: [], none: false, bytes: left.reduce((a, f) => a + f.size, 0) }
+    }
+    const byName = new Map<string, DriveItem[]>()
+    for (const f of pool) byName.set(f.name.toLowerCase(), [...(byName.get(f.name.toLowerCase()) || []), f])
     let found = 0
     const missing: string[] = []
-    for (const w of wanted) {
+    for (const [w, original] of typed) {
       const hits = byName.get(w)
-      if (!hits) missing.push(typed.get(w) || w)
+      if (!hits) missing.push(original)
       else
         for (const h of hits) {
           if (!next.has(h.id)) found++
@@ -248,7 +255,7 @@ export default function Drive() {
         }
     }
     setPicked(next)
-    return { found, missing, none: false }
+    return { mode, found, matched: found, missing, none: false }
   }
 
   const selection = Array.from(picked.values())
@@ -388,9 +395,14 @@ export default function Drive() {
                 </button>
               )}
               {!running && (
-                <button className="text-ink-2 hover:text-ink" onClick={() => setNamePicker(true)}>
-                  Select by name
-                </button>
+                <>
+                  <button className="text-ink-2 hover:text-ink" onClick={() => setNamePicker('except')}>
+                    Find what's missing
+                  </button>
+                  <button className="text-ink-2 hover:text-ink" onClick={() => setNamePicker('only')}>
+                    Select by name
+                  </button>
+                </>
               )}
               {canPreload() && files.some(downloadable) && (
                 <div className="relative">
@@ -421,6 +433,17 @@ export default function Drive() {
               )}
             </div>
           </div>
+          {onlyIds && (
+            <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-line bg-warn-soft px-4 py-2.5 text-sm text-warn">
+              <span>
+                Showing only the {plural(onlyIds.size, 'file')} you don't have yet, across this folder and its subfolders. They're
+                selected and ready to save.
+              </span>
+              <button className="underline underline-offset-4" onClick={() => setOnlyIds(null)}>
+                Show everything
+              </button>
+            </div>
+          )}
           <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-muted">
             <span className="tabular-nums">
               <span className="text-ink-2">In this folder:</span>{' '}
@@ -524,7 +547,7 @@ export default function Drive() {
         </div>
       )}
 
-      {namePicker && <NamePicker hasFolders={folders.length > 0} run={selectByNames} close={() => setNamePicker(false)} />}
+      {namePicker && <NamePicker initialMode={namePicker} hasFolders={folders.length > 0} run={selectByNames} close={() => setNamePicker(false)} />}
       {preview && <Preview f={preview} close={() => setPreview(null)} on={picked.has(preview.id)} toggle={() => toggle(preview)} />}
     </Shell>
   )
@@ -919,62 +942,162 @@ function Preview({ f, close, on, toggle }: { f: DriveItem; close: () => void; on
   )
 }
 
+type NameResult = { mode: 'only' | 'except'; found: number; matched: number; missing: string[]; none: boolean; bytes?: number }
+
 function NamePicker({
+  initialMode,
   hasFolders,
   run,
   close,
 }: {
+  initialMode: 'only' | 'except'
   hasFolders: boolean
-  run: (text: string, deep: boolean) => Promise<{ found: number; missing: string[]; none: boolean }>
+  run: (text: string, deep: boolean, mode: 'only' | 'except') => Promise<NameResult>
   close: () => void
 }) {
   const [text, setText] = useState('')
+  const [mode, setMode] = useState<'only' | 'except'>(initialMode)
   const [deep, setDeep] = useState(true)
   const [busy, setBusy] = useState(false)
-  const [result, setResult] = useState<{ found: number; missing: string[]; none: boolean } | null>(null)
+  const [loadedFrom, setLoadedFrom] = useState('')
+  const [loadErr, setLoadErr] = useState('')
+  const [result, setResult] = useState<NameResult | null>(null)
+  const folderInput = useRef<HTMLInputElement>(null)
+  const fileInput = useRef<HTMLInputElement>(null)
   useEffect(() => {
     const k = (e: KeyboardEvent) => e.key === 'Escape' && close()
     window.addEventListener('keydown', k)
     return () => window.removeEventListener('keydown', k)
   }, [close])
+
+  const fill = (names: string[], from: string, nextMode?: 'only' | 'except') => {
+    setText(names.join('\n'))
+    setLoadedFrom(`${plural(names.length, 'name')} from ${from}`)
+    setResult(null)
+    setLoadErr('')
+    if (nextMode) setMode(nextMode)
+  }
+
+  const fromFolder = async () => {
+    if ('showDirectoryPicker' in window) {
+      try {
+        const dir = await window.showDirectoryPicker({ id: 'handoff-compare', mode: 'read' })
+        fill(await folderFileNames(dir), dir.name, 'except')
+      } catch {
+        /* closed the picker */
+      }
+    } else folderInput.current?.click()
+  }
+
+  const fromFile = async (f: File) => {
+    try {
+      if (/\.zip$/i.test(f.name)) fill(await zipFileNames(f), f.name, 'except')
+      else fill((await f.text()).split(/\r?\n/).filter((l) => l.trim()), f.name)
+    } catch (e) {
+      setLoadErr((e as Error).message)
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink/60 p-4" onClick={close}>
-      <div className="w-full max-w-lg rounded-xl bg-paper p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+      <input
+        ref={folderInput}
+        type="file"
+        className="hidden"
+        // @ts-expect-error non-standard but widely supported
+        webkitdirectory=""
+        multiple
+        onChange={(e) => {
+          const fl = e.target.files
+          if (fl?.length) fill(Array.from(fl, (f) => f.name).filter((n) => !n.startsWith('.')), (fl[0].webkitRelativePath || '').split('/')[0] || 'that folder', 'except')
+          e.target.value = ''
+        }}
+      />
+      <input
+        ref={fileInput}
+        type="file"
+        accept=".zip,.txt,text/plain,application/zip"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0]
+          if (f) void fromFile(f)
+          e.target.value = ''
+        }}
+      />
+      <div className="w-full max-w-lg rounded-xl bg-paper p-6 shadow-xl max-h-[92vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start justify-between gap-4">
           <div>
-            <h2 className="text-lg font-semibold tracking-tight">Select by name</h2>
+            <h2 className="text-lg font-semibold tracking-tight">{initialMode === 'except' ? "Find what's missing" : 'Select by name'}</h2>
             <p className="mt-1 text-sm text-muted leading-relaxed">
-              Paste file names and Handoff ticks the matching files. One per line, separated by commas, or a copied list of
-              failed downloads all work.
+              {initialMode === 'except'
+                ? 'Point Handoff at the folder or zip you already downloaded. It selects every file here that is not in it yet.'
+                : 'Paste file names, or load them from a folder, zip or .txt list.'}
             </p>
           </div>
           <button onClick={close} className="text-muted hover:text-ink" aria-label="Close">
             <X size={18} weight="bold" />
           </button>
         </div>
-        <label className="mt-4 block">
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          <Button kind="secondary" size="sm" onClick={fromFolder}>
+            <FolderSimple size={14} weight="bold" /> Load names from a folder
+          </Button>
+          <Button kind="secondary" size="sm" onClick={() => fileInput.current?.click()}>
+            Load from a .zip or .txt
+          </Button>
+        </div>
+        {loadedFrom && <p className="mt-2 text-xs text-ok">Loaded {loadedFrom}.</p>}
+        {loadErr && <p className="mt-2 text-xs text-tally">{loadErr}</p>}
+
+        <label className="mt-3 block">
           <span className="sr-only">File names</span>
           <textarea
-            autoFocus
             value={text}
             onChange={(e) => {
               setText(e.target.value)
+              setLoadedFrom('')
               setResult(null)
             }}
-            rows={8}
+            rows={7}
             className="num w-full rounded-md border border-line bg-card p-3 text-sm outline-none focus:border-ink/40"
           />
         </label>
+
+        <div className="mt-3 flex flex-col gap-2 text-sm">
+          <label className="flex items-start gap-2.5 cursor-pointer">
+            <input type="radio" name="mode" className="mt-1 accent-[#1c1b19]" checked={mode === 'only'} onChange={() => (setMode('only'), setResult(null))} />
+            <span>
+              <span className="font-medium text-ink">Select the files on this list</span>
+              <span className="block text-muted">For retrying failed downloads.</span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2.5 cursor-pointer">
+            <input type="radio" name="mode" className="mt-1 accent-[#1c1b19]" checked={mode === 'except'} onChange={() => (setMode('except'), setResult(null))} />
+            <span>
+              <span className="font-medium text-ink">Select everything that's NOT on this list</span>
+              <span className="block text-muted">For finding what you haven't downloaded yet. Only those files will show.</span>
+            </span>
+          </label>
+        </div>
+
         {hasFolders && (
           <label className="mt-3 flex items-center gap-2 text-sm text-ink-2 cursor-pointer select-none">
             <input type="checkbox" className="size-4 accent-[#1c1b19]" checked={deep} onChange={(e) => setDeep(e.target.checked)} />
             Look inside subfolders too
           </label>
         )}
+
         {result && (
           <div className="mt-4 text-sm">
             {result.none ? (
               <p className="text-warn">No file names found in that text. Names need their extension, like .MOV or .MP4.</p>
+            ) : result.mode === 'except' ? (
+              <p className="text-ink">
+                {result.found === 0
+                  ? `You already have all ${plural(result.matched, 'file')}. Nothing is missing.`
+                  : `${plural(result.found, 'file')} (${bytes(result.bytes || 0)}) ${result.found === 1 ? "isn't" : "aren't"} on your list, so ${result.found === 1 ? "it's" : "they're"} selected. ${result.matched} you already have ${result.matched === 1 ? 'was' : 'were'} left out.`}
+              </p>
             ) : (
               <>
                 <p className="text-ink">
@@ -1004,13 +1127,13 @@ function NamePicker({
                 onClick={async () => {
                   setBusy(true)
                   try {
-                    setResult(await run(text, hasFolders && deep))
+                    setResult(await run(text, hasFolders && deep, mode))
                   } finally {
                     setBusy(false)
                   }
                 }}
               >
-                {busy ? 'Looking...' : 'Select matches'}
+                {busy ? 'Looking...' : mode === 'except' ? 'Find what is missing' : 'Select matches'}
               </Button>
             </>
           )}
