@@ -204,8 +204,57 @@ export interface SaveProgress {
   bytes: number
   current: string
   done: number
-  failed: { name: string; why: string }[]
+  failed: { name: string; why: string; item: DriveItem }[]
   skipped: number
+}
+
+const sleep = (ms: number, signal: AbortSignal) =>
+  new Promise<void>((r) => {
+    const t = setTimeout(r, ms)
+    signal.addEventListener('abort', () => (clearTimeout(t), r()), { once: true })
+  })
+
+// Errors that won't go away by trying again.
+const permanent = (e: unknown) => e instanceof DriveError && ['notFound', 'forbidden', 'key'].includes(e.reason)
+
+export function friendlyError(e: unknown): string {
+  const m = String((e as Error)?.message || e)
+  if (/NetworkError|Failed to fetch|network|Load failed/i.test(m))
+    return "Lost the connection to Google. If a VPN is on, turn it off and try again."
+  return m
+}
+
+// Tries a few times with a growing pause, since Google sometimes refuses a
+// burst of downloads for a moment. Gives up straight away on permanent errors.
+async function withRetries<T>(signal: AbortSignal, fn: () => Promise<T>): Promise<T> {
+  const waits = [2000, 6000, 15000]
+  for (let i = 0; ; i++) {
+    try {
+      return await fn()
+    } catch (e) {
+      if (signal.aborted || permanent(e) || i >= waits.length) throw e
+      await sleep(waits[i], signal)
+    }
+  }
+}
+
+// After several failures in a row, Google is usually limiting us. Pause before going on.
+function cooldown() {
+  let streak = 0
+  return {
+    ok() {
+      streak = 0
+    },
+    async failed(p: SaveProgress, signal: AbortSignal, onProgress: (p: SaveProgress) => void) {
+      streak++
+      if (streak >= 4) {
+        p.current = 'Google stopped answering for a moment. Waiting 30 seconds, then carrying on...'
+        onProgress({ ...p })
+        await sleep(30000, signal)
+        streak = 0
+      }
+    },
+  }
 }
 
 export async function saveToFolder(
@@ -215,6 +264,7 @@ export async function saveToFolder(
   onProgress: (p: SaveProgress) => void,
 ) {
   const p: SaveProgress = { bytes: 0, current: '', done: 0, failed: [], skipped: 0 }
+  const cool = cooldown()
   for (const item of items) {
     if (signal.aborted) break
     const rel = [...safePath(item.path), ...safePath(item.name)]
@@ -234,28 +284,32 @@ export async function saveToFolder(
     } catch {
       /* not there yet */
     }
-    let w: FileSystemWritableFileStream | null = null
-    let got = 0
     try {
-      const res = await openMedia(item, signal)
-      const fh = await d.getFileHandle(name, { create: true })
-      w = await fh.createWritable()
-      await counted(res.body!, (n) => {
-        got += n
-        p.bytes += n
-        onProgress({ ...p })
-      }).pipeTo(w, { signal })
-      w = null // pipeTo closes it
+      await withRetries(signal, async () => {
+        let w: FileSystemWritableFileStream | null = null
+        let got = 0
+        try {
+          const res = await openMedia(item, signal)
+          const fh = await d.getFileHandle(name, { create: true })
+          w = await fh.createWritable()
+          await counted(res.body!, (n) => {
+            got += n
+            p.bytes += n
+            onProgress({ ...p })
+          }).pipeTo(w, { signal })
+          w = null // pipeTo closes it
+        } catch (e) {
+          p.bytes -= got
+          await w?.abort().catch(() => {})
+          throw e
+        }
+      })
       p.done++
+      cool.ok()
     } catch (e) {
-      p.bytes -= got
-      try {
-        await w?.abort()
-      } catch {
-        /* ignore */
-      }
       if (signal.aborted) break
-      p.failed.push({ name: item.name, why: (e as Error).message })
+      p.failed.push({ name: item.name, why: friendlyError(e), item })
+      await cool.failed(p, signal, onProgress)
     }
     onProgress({ ...p })
   }
@@ -271,13 +325,16 @@ export async function saveAsZip(
   onProgress: (p: SaveProgress) => void,
 ) {
   const p: SaveProgress = { bytes: 0, current: '', done: 0, failed: [], skipped: 0 }
+  const cool = cooldown()
   async function* entries() {
     for (const item of items) {
       if (signal.aborted) return
       p.current = [item.path, item.name].filter(Boolean).join('/')
       onProgress({ ...p })
       try {
-        const res = await openMedia(item, signal)
+        // Retries only help before the file starts streaming into the zip.
+        const res = await withRetries(signal, () => openMedia(item, signal))
+        cool.ok()
         yield {
           name: [...safePath(item.path), ...safePath(item.name)].join('/'),
           lastModified: item.modified ? new Date(item.modified) : new Date(),
@@ -290,8 +347,9 @@ export async function saveAsZip(
         p.done++
       } catch (e) {
         if (signal.aborted) return
-        p.failed.push({ name: item.name, why: (e as Error).message })
+        p.failed.push({ name: item.name, why: friendlyError(e), item })
         onProgress({ ...p })
+        await cool.failed(p, signal, onProgress)
       }
     }
   }

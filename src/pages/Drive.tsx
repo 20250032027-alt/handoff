@@ -129,6 +129,7 @@ export default function Drive() {
   }
 
   const downloadable = (f: DriveItem) => !f.isFolder && !f.isGoogleDoc
+  const [namePicker, setNamePicker] = useState(false)
   const visible = useMemo(
     () => (items || []).filter((f) => !videosOnly || f.isFolder || f.isVideo),
     [items, videosOnly],
@@ -210,6 +211,44 @@ export default function Drive() {
     } finally {
       setBusyFolder('')
     }
+  }
+
+  // Pick files by pasting their names, e.g. a list of failed downloads.
+  const selectByNames = async (text: string, deepSearch: boolean) => {
+    const typed = new Map<string, string>()
+    for (const n of text.match(/[^\s:,;"'<>|\\/]+\.[A-Za-z0-9]{2,5}\b/g) || []) if (!typed.has(n.toLowerCase())) typed.set(n.toLowerCase(), n)
+    const wanted = Array.from(typed.keys())
+    if (!wanted.length) return { found: 0, missing: [] as string[], none: true }
+    const pool: DriveItem[] = (items || []).filter(downloadable)
+    if (deepSearch) {
+      const top = crumbs[crumbs.length - 1]
+      const walk = async (id: string, rk: string, path: string) => {
+        for (const it of await listFolder({ id, resourceKey: rk }, path)) {
+          if (it.isFolder) await walk(it.id, it.resourceKey, [path, it.name].filter(Boolean).join('/'))
+          else if (downloadable(it) && path !== top.path) pool.push(it)
+        }
+      }
+      for (const f of (items || []).filter((x) => x.isFolder)) await walk(f.id, f.resourceKey, [top.path, f.name].filter(Boolean).join('/'))
+    }
+    const byName = new Map<string, DriveItem[]>()
+    for (const f of pool) {
+      const k = f.name.toLowerCase()
+      byName.set(k, [...(byName.get(k) || []), f])
+    }
+    const next = new Map(picked)
+    let found = 0
+    const missing: string[] = []
+    for (const w of wanted) {
+      const hits = byName.get(w)
+      if (!hits) missing.push(typed.get(w) || w)
+      else
+        for (const h of hits) {
+          if (!next.has(h.id)) found++
+          next.set(h.id, h)
+        }
+    }
+    setPicked(next)
+    return { found, missing, none: false }
   }
 
   const selection = Array.from(picked.values())
@@ -348,6 +387,11 @@ export default function Drive() {
                   {allHerePicked ? 'Unselect all here' : 'Select all here'}
                 </button>
               )}
+              {!running && (
+                <button className="text-ink-2 hover:text-ink" onClick={() => setNamePicker(true)}>
+                  Select by name
+                </button>
+              )}
               {canPreload() && files.some(downloadable) && (
                 <div className="relative">
                   <Button kind="secondary" size="sm" onClick={() => setPreloadMenu((o) => !o)}>
@@ -445,7 +489,17 @@ export default function Drive() {
       {(selection.length > 0 || job) && (
         <div className="fixed inset-x-0 bottom-0 z-20 border-t border-line bg-paper/95 backdrop-blur">
           <div className="max-w-5xl mx-auto px-5 md:px-8 py-4">
-            {job ? <JobBar job={job} stop={() => abort.current?.abort()} close={() => setJob(null)} /> : (
+            {job ? (
+              <JobBar
+                job={job}
+                stop={() => abort.current?.abort()}
+                close={() => setJob(null)}
+                retry={(list) => {
+                  setPicked(new Map(list.map((f) => [f.id, f])))
+                  setJob(null)
+                }}
+              />
+            ) : (
               <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                 <div className="flex-1 min-w-0">
                   <p className="font-medium">
@@ -470,6 +524,7 @@ export default function Drive() {
         </div>
       )}
 
+      {namePicker && <NamePicker hasFolders={folders.length > 0} run={selectByNames} close={() => setNamePicker(false)} />}
       {preview && <Preview f={preview} close={() => setPreview(null)} on={picked.has(preview.id)} toggle={() => toggle(preview)} />}
     </Shell>
   )
@@ -864,7 +919,121 @@ function Preview({ f, close, on, toggle }: { f: DriveItem; close: () => void; on
   )
 }
 
-function JobBar({ job, stop, close }: { job: Job; stop: () => void; close: () => void }) {
+function NamePicker({
+  hasFolders,
+  run,
+  close,
+}: {
+  hasFolders: boolean
+  run: (text: string, deep: boolean) => Promise<{ found: number; missing: string[]; none: boolean }>
+  close: () => void
+}) {
+  const [text, setText] = useState('')
+  const [deep, setDeep] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<{ found: number; missing: string[]; none: boolean } | null>(null)
+  useEffect(() => {
+    const k = (e: KeyboardEvent) => e.key === 'Escape' && close()
+    window.addEventListener('keydown', k)
+    return () => window.removeEventListener('keydown', k)
+  }, [close])
+  return (
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-ink/60 p-4" onClick={close}>
+      <div className="w-full max-w-lg rounded-xl bg-paper p-6 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold tracking-tight">Select by name</h2>
+            <p className="mt-1 text-sm text-muted leading-relaxed">
+              Paste file names and Handoff ticks the matching files. One per line, separated by commas, or a copied list of
+              failed downloads all work.
+            </p>
+          </div>
+          <button onClick={close} className="text-muted hover:text-ink" aria-label="Close">
+            <X size={18} weight="bold" />
+          </button>
+        </div>
+        <label className="mt-4 block">
+          <span className="sr-only">File names</span>
+          <textarea
+            autoFocus
+            value={text}
+            onChange={(e) => {
+              setText(e.target.value)
+              setResult(null)
+            }}
+            rows={8}
+            className="num w-full rounded-md border border-line bg-card p-3 text-sm outline-none focus:border-ink/40"
+          />
+        </label>
+        {hasFolders && (
+          <label className="mt-3 flex items-center gap-2 text-sm text-ink-2 cursor-pointer select-none">
+            <input type="checkbox" className="size-4 accent-[#1c1b19]" checked={deep} onChange={(e) => setDeep(e.target.checked)} />
+            Look inside subfolders too
+          </label>
+        )}
+        {result && (
+          <div className="mt-4 text-sm">
+            {result.none ? (
+              <p className="text-warn">No file names found in that text. Names need their extension, like .MOV or .MP4.</p>
+            ) : (
+              <>
+                <p className="text-ink">
+                  Selected {plural(result.found, 'file')}.
+                  {result.missing.length === 0 ? ' Every name matched.' : ''}
+                </p>
+                {result.missing.length > 0 && (
+                  <p className="mt-1 text-muted">
+                    Couldn't find {plural(result.missing.length, 'name')} here:{' '}
+                    <span className="num">{result.missing.slice(0, 8).join(', ')}{result.missing.length > 8 ? ', ...' : ''}</span>
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+        )}
+        <div className="mt-5 flex justify-end gap-3">
+          {result && !result.none ? (
+            <Button onClick={close}>Done</Button>
+          ) : (
+            <>
+              <Button kind="secondary" onClick={close}>
+                Cancel
+              </Button>
+              <Button
+                disabled={!text.trim() || busy}
+                onClick={async () => {
+                  setBusy(true)
+                  try {
+                    setResult(await run(text, hasFolders && deep))
+                  } finally {
+                    setBusy(false)
+                  }
+                }}
+              >
+                {busy ? 'Looking...' : 'Select matches'}
+              </Button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function namesText(list: { name: string }[]) {
+  return list.map((f) => f.name).join('\n')
+}
+
+function saveTextFile(name: string, text: string) {
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' }))
+  a.download = name
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000)
+}
+
+function JobBar({ job, stop, close, retry }: { job: Job; stop: () => void; close: () => void; retry: (items: DriveItem[]) => void }) {
+  const [copied, setCopied] = useState(false)
   const pct = job.p.bytes / Math.max(1, job.total)
   const left = job.speed > 0 ? (job.total - job.p.bytes) / job.speed : NaN
   if (job.finished) {
@@ -885,16 +1054,45 @@ function JobBar({ job, stop, close }: { job: Job; stop: () => void; close: () =>
             </p>
           )}
           {job.p.failed.length > 0 && (
-            <details className="mt-1 text-sm text-warn">
-              <summary className="cursor-pointer">{plural(job.p.failed.length, 'file')} couldn't be saved</summary>
-              <ul className="mt-2 flex flex-col gap-1 text-ink-2">
-                {job.p.failed.map((f) => (
-                  <li key={f.name}>
-                    <span className="num">{f.name}</span>: {f.why}
-                  </li>
-                ))}
-              </ul>
-            </details>
+            <div className="mt-2">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+                <span className="text-warn font-medium">{plural(job.p.failed.length, 'file')} couldn't be saved</span>
+                <button className="text-ink underline underline-offset-4" onClick={() => retry(job.p.failed.map((f) => f.item))}>
+                  Select these to try again
+                </button>
+                <button
+                  className="text-ink-2 underline underline-offset-4 hover:text-ink"
+                  onClick={async () => {
+                    await navigator.clipboard.writeText(namesText(job.p.failed)).catch(() => {})
+                    setCopied(true)
+                    setTimeout(() => setCopied(false), 1800)
+                  }}
+                >
+                  {copied ? 'Copied' : 'Copy names'}
+                </button>
+                <button
+                  className="text-ink-2 underline underline-offset-4 hover:text-ink"
+                  onClick={() => saveTextFile('failed-files.txt', namesText(job.p.failed))}
+                >
+                  Save list as .txt
+                </button>
+              </div>
+              {(() => {
+                const reasons = Array.from(new Set(job.p.failed.map((f) => f.why)))
+                return reasons.length === 1 ? <p className="mt-1 text-sm text-muted">Reason: {reasons[0]}</p> : null
+              })()}
+              <details className="mt-1 text-sm">
+                <summary className="cursor-pointer text-muted hover:text-ink">Show the list</summary>
+                <ul className="mt-2 max-h-48 overflow-y-auto flex flex-col gap-1 text-ink-2 pr-2">
+                  {job.p.failed.map((f) => (
+                    <li key={f.item.id} className="truncate">
+                      <span className="num">{f.name}</span>
+                      <span className="text-muted">: {f.why}</span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            </div>
           )}
         </div>
         <Button kind="secondary" onClick={close}>
@@ -919,6 +1117,7 @@ function JobBar({ job, stop, close }: { job: Job; stop: () => void; close: () =>
       </div>
       <div className="num mt-2 flex flex-wrap gap-x-6 gap-y-1 text-sm text-muted">
         <span className="text-ink">{Math.floor(pct * 100)}%</span>
+        {job.p.failed.length > 0 && <span className="text-warn">{job.p.failed.length} failed so far</span>}
         <span>
           {bytes(job.p.bytes)} / {bytes(job.total)}
         </span>
